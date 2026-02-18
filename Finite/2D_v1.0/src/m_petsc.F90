@@ -177,4 +177,103 @@ subroutine assemble_petsc_source_vec(B_VEC, mesh, FE, Quad, NGRP, S_ext)
     end do
 end subroutine assemble_petsc_source_vec
 
+subroutine assemble_multigroup_fission_vec(Q_PETSC, mesh, FE, Quad, materials, X_VEC, n_groups, k_eff)
+    Vec, intent(inout)              :: Q_PETSC
+    type(t_mesh), intent(in)        :: mesh
+    type(t_finite), intent(in)      :: FE
+    type(t_quadrature), intent(in)  :: Quad
+    type(t_material), intent(in)    :: materials(:)
+    Vec, intent(in)                 :: X_VEC(:)
+    integer, intent(in)             :: n_groups
+    real(dp), intent(in)            :: k_eff
+
+    integer :: ee, g, i, q, mat_id, ierr
+    real(dp) :: detJ, dV, local_phi_fission, inv_k
+    real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis)
+    real(dp) :: phi_at_nodes(FE%n_basis)
+    integer  :: idx(FE%n_basis)
+    PetscScalar, allocatable :: local_Q(:)
+    PetscScalar, pointer     :: p_phi(:) ! Pointer for direct memory access
+
+    inv_k = 1.0_dp / k_eff
+    call VecZeroEntries(Q_PETSC, ierr)
+    allocate(local_Q(FE%n_basis))
+
+    do ee = 1, mesh%n_elems
+        mat_id = mesh%mats(ee)
+        idx = mesh%elems(ee, :) - 1
+        
+        do i = 1, FE%n_basis
+            elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
+        end do
+
+        local_Q = 0.0_dp
+
+        do q = 1, Quad%NoPoints
+            call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+            dV = detJ * Quad%W(q)
+            
+            local_phi_fission = 0.0_dp
+            do g = 1, n_groups
+                call VecGetArrayRead(X_VEC(g), p_phi, ierr)
+                do i = 1, FE%n_basis
+                    phi_at_nodes(i) = p_phi(idx(i) + 1)
+                end do
+                call VecRestoreArrayRead(X_VEC(g), p_phi, ierr)
+                
+                local_phi_fission = local_phi_fission + &
+                    materials(mat_id)%nuSigF(g) * dot_product(FE%N(q, :), phi_at_nodes)
+            end do
+
+            do i = 1, FE%n_basis
+                local_Q(i) = local_Q(i) + local_phi_fission * FE%N(q, i) * dV
+            end do
+        end do
+
+        call VecSetValues(Q_PETSC, FE%n_basis, idx, local_Q, ADD_VALUES, ierr)
+    end do
+
+    call VecAssemblyBegin(Q_PETSC, ierr)
+    call VecAssemblyEnd(Q_PETSC, ierr)
+    deallocate(local_Q)
+end subroutine assemble_multigroup_fission_vec
+
+subroutine calculate_total_production_petsc(total_prod, X_VEC, mesh, FE, Quad, materials, n_groups)
+    real(dp), intent(out) :: total_prod
+    Vec,      intent(in)  :: X_VEC(:)
+    type(t_mesh),      intent(in)  :: mesh
+    type(t_finite),    intent(in)  :: FE
+    type(t_quadrature), intent(in)  :: Quad
+    type(t_material),  intent(in)  :: materials(:)
+    integer,           intent(in)  :: n_groups
+
+    integer :: ee, g, i, q, mat_id, idx(FE%n_basis)
+    real(dp) :: detJ, dV, local_phi, elem_phi(FE%n_basis)
+    real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis)
+    PetscScalar, pointer :: p_phi(:)
+    PetscErrorCode     :: ierr
+
+    total_prod = 0.0_dp
+    call VecGetArrayRead(X_VEC(1), p_phi, ierr)
+
+    do ee = 1, mesh%n_elems
+        mat_id = mesh%mats(ee)
+        idx = mesh%elems(ee, :)
+        do i = 1, FE%n_basis; elem_coords(i,:) = mesh%nodes(idx(i),:); end do
+        
+        elem_phi = p_phi(idx) 
+
+        do q = 1, Quad%NoPoints
+            call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+            dV = detJ * Quad%W(q)
+            
+            local_phi = dot_product(FE%N(q, :), elem_phi)
+            
+            total_prod = total_prod + materials(mat_id)%nuSigF(1) * local_phi * dV
+        end do
+    end do
+
+    call VecRestoreArrayRead(X_VEC(1), p_phi, ierr)
+end subroutine calculate_total_production_petsc
+
 end module m_petsc

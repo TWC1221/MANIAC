@@ -114,8 +114,10 @@ contains
         allocate(mesh%elems(n_quads, mesh%nloc))
         allocate(mesh%edges(n_lines, 3))
         allocate(mesh%mats(n_quads))
+        allocate(mesh%edge_mats(n_lines))  
 
         mesh%edges = 0
+        mesh%edge_mats = 0     
 
         iq = 0; il = 0
         do i = 1, nelem
@@ -131,6 +133,7 @@ contains
                 end do
             case (3, 21)
                 il = il + 1
+                mesh%edge_mats(il) = material_all(i) 
                 do j = 1, npe
                     mesh%edges(il, j) = connectivity(start + j) + 1
                 end do
@@ -144,6 +147,7 @@ contains
             call write_nodes(nodes3)
             call write_elements(nelem, connectivity, elem_ptr, elem_type)
             call write_materials(material_all)
+            call write_edges(n_lines, mesh%edges, mesh%edge_mats)
             print *, "Mesh successfully parsed and written to .dat files."
         end if
 
@@ -153,6 +157,21 @@ contains
         if (allocated(elem_type))     deallocate(elem_type)
         if (allocated(material_all))  deallocate(material_all)
     end subroutine parse
+
+    subroutine write_edges(n_lines, edges, edge_mats)
+        integer, intent(in) :: n_lines, edges(:,:), edge_mats(:)
+        integer :: i, jj, unit
+        open(newunit=unit, file="edges.dat", status="replace")
+        write(unit,'(A)') '# id     material        nodes...'
+        do i = 1, n_lines
+            write(unit,'(I8,I12)',advance="no") i, edge_mats(i)
+            do jj = 1, size(edges, 2)
+                if (edges(i,jj) > 0) write(unit,'(I8)',advance="no") edges(i,jj)
+            end do
+            write(unit,*)
+        end do
+        close(unit)
+    end subroutine write_edges
 
     subroutine write_nodes(nodes3)
         real(dp), intent(in) :: nodes3(:,:)

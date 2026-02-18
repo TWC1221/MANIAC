@@ -2,19 +2,20 @@ module m_types
     use m_constants
     implicit none
     
-    type :: t_mesh
-        integer :: dim=2, n_nodes=0, n_elems=0, n_edges=0, nloc = 9
-        real(dp),    allocatable :: nodes(:,:)         ! (2, n_nodes)
-        integer,     allocatable :: elems(:,:)         ! (n_elems, 4)  (vtk=9)
-        integer,     allocatable :: edges(:,:)         ! (n_edges, 2)  (vtk=3)
-        integer,     allocatable :: mats(:)            ! (n_elems)
+    type t_mesh
+        integer :: n_nodes, n_elems, n_edges, nloc, dim
+        real(dp), allocatable :: nodes(:,:)
+        integer,  allocatable :: elems(:,:)
+        integer,  allocatable :: edges(:,:)
+        integer,  allocatable :: mats(:)       ! For Quads
+        integer,  allocatable :: edge_mats(:)  ! For Lines/Boundaries
     end type t_mesh
 
     type :: t_finite
         integer :: order
         integer :: n_basis
-        integer, allocatable :: p(:) ! Nodal Mappings
-        real(dp), allocatable :: Xi(:) ! 1D Node positions
+        integer, allocatable :: p(:)           ! Nodal Mappings
+        real(dp), allocatable :: Xi(:)         ! 1D Node positions
 
         real(dp), allocatable :: N(:,:)        ! Shape functions
         real(dp), allocatable :: dN_dxi(:,:)   ! Derivatives w.r.t xi

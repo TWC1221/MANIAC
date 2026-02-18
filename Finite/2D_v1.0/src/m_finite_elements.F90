@@ -7,7 +7,7 @@ module m_finite_elements
         
     contains
 
-    subroutine InitFE(FE, Quad, QuadBound)
+    subroutine InitialiseFE(FE, Quad, QuadBound)
         type(t_finite), intent(inout) :: FE
         type(t_quadrature), intent(in) :: Quad, QuadBound
         integer :: gp, i, j, n, Poly
@@ -17,13 +17,13 @@ module m_finite_elements
         
         call finite_1D_positions(FE, Poly)
 
-        if (allocated(FE%N))      deallocate(FE%N)
+        if (allocated(FE%N))       deallocate(FE%N)
         if (allocated(FE%dN_dxi))  deallocate(FE%dN_dxi)
         if (allocated(FE%dN_deta)) deallocate(FE%dN_deta)
         if (allocated(FE%N_mat))   deallocate(FE%N_mat)
         if (allocated(FE%N_B))     deallocate(FE%N_B)
         if (allocated(FE%dN_B))    deallocate(FE%dN_B)
-        if (allocated(FE%p)) deallocate(FE%p)
+        if (allocated(FE%p))       deallocate(FE%p)
 
         allocate(FE%N(Quad%NoPoints, FE%n_basis))
         allocate(FE%dN_dxi(Quad%NoPoints, FE%n_basis))
@@ -37,7 +37,6 @@ module m_finite_elements
         select case (FE%n_basis)
         case (4)  ; FE%p = [1, 2, 4, 3]                  ! Linear
         case (9)  ; FE%p = [1, 5, 2, 8, 9, 6, 4, 7, 3]   ! Quadratic
-        case (16) ; FE%p = [1, 5, 6, 2, 12, 13, 14, 7, 11, 16, 15, 8, 4, 10, 9, 3] ! Cubic
         end select
             
         do gp = 1, Quad%NoPoints
@@ -65,7 +64,7 @@ module m_finite_elements
                 FE%dN_B(gp, i) = FE_basis_derivative_1D(FE, Poly, i, QuadBound%Xi(gp))
             end do
         end do
-    end subroutine InitFE
+    end subroutine InitialiseFE
 
     subroutine GetMapping(FE, gp, elem_coords, dN_dx, dN_dy, detJ)
         type(t_finite), intent(in)   :: FE

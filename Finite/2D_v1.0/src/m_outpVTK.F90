@@ -12,7 +12,7 @@ module m_outpVTK
 
   implicit none
   private
-  public :: export_vtk, export_vtk_pcg
+  public :: export_vtk_petsc, export_vtk_pcg
 
 contains
   
@@ -20,7 +20,7 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     character(len=*), intent(in) :: filename
     type(t_finite),   intent(in) :: FE
     type(t_mesh),     intent(in) :: mesh
-    type(t_vec),      intent(in) :: X_PCG(:) ! Using your custom type
+    type(t_vec),      intent(in) :: X_PCG(:)
     integer,          intent(in) :: NGRP, refine_level
     logical,          intent(in) :: use_z
 
@@ -97,7 +97,6 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
         end do
     end do
 
-    ! 4) Write VTK File
     unit_v = 101
     open(unit=unit_v, file=trim(filename)//".vtk", status='replace', action='write')
     write(unit_v, '(A)') "# vtk DataFile Version 3.0"
@@ -140,10 +139,12 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     end do
     close(unit_v)
 
+    print *, ">>> Interpolated visualization saved to ", trim(filename)//".vtk"
+
     deallocate(xi_grid, eta_grid, N_eval, Xp, Up, Cells)
   end subroutine export_vtk_pcg
 
-  subroutine export_vtk(filename, FE, mesh, XPETSc, NGRP, refine_level, use_z)
+  subroutine export_vtk_petsc(filename, FE, mesh, XPETSc, NGRP, refine_level, use_z)
     character(len=*), intent(in) :: filename
     type(t_finite),   intent(in) :: FE
     type(t_mesh),     intent(in) :: mesh
@@ -207,13 +208,13 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
       end do
       do g = 1, NGRP
         PetscCall(VecGetArrayRead(XPETSc(g), p_sol, ierr))
-        basep = (ee-1)*npts_elem   ! 0-based base for this element’s point block
+        basep = (ee-1)*npts_elem 
         do j = 1, refine_level
           eta = eta_grid(j)
           do i = 1, refine_level
             xi = xi_grid(i)
             call GetArbitraryBasis(FE, xi, eta, N_eval)
-            gid = basep + (j-1)*refine_level + i         ! 1-based gid
+            gid = basep + (j-1)*refine_level + i  
             Up(gid,g) = 0.0_dp
             do a = 1, nbasis
               Up(gid,g) = Up(gid,g) + N_eval(a) * real(p_sol(mesh%elems(ee,a)), dp)
@@ -224,38 +225,31 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
       end do
     end do
 
-    ! Optionally lift the surface: z := Up(:,1)
     if (use_z) then
       do gid = 1, n_sub_nodes
         Xp(gid,3) = Up(gid,1)
       end do
     end if
 
-    ! 4) Build cell connectivity with robust rotation to bottom-left & CCW
     cid = 0
     do ee = 1, mesh%n_elems
         basep = (ee-1)*npts_elem
         do j = 1, refine_level-1
             do i = 1, refine_level-1
-            ! Zero-based local indices in this element block (VTK uses 0-based)
-            n00 = basep + (j-1)*refine_level + (i-1)   ! lower-left in param space
-            n10 = n00 + 1                               ! +xi
-            n01 = n00 + refine_level                    ! +eta
-            n11 = n01 + 1                               ! +xi,+eta
+            n00 = basep + (j-1)*refine_level + (i-1)   
+            n10 = n00 + 1                             
+            n01 = n00 + refine_level                   
+            n11 = n01 + 1                               
 
-            ! Convert to 1-based for array access into Xp (Xp is 1-based)
             x(1) = Xp(n00+1,1); y(1) = Xp(n00+1,2)
             x(2) = Xp(n10+1,1); y(2) = Xp(n10+1,2)
             x(3) = Xp(n11+1,1); y(3) = Xp(n11+1,2)
             x(4) = Xp(n01+1,1); y(4) = Xp(n01+1,2)
 
-            ! Start with standard param order: (n00, n10, n11, n01)
             v = [n00, n10, n11, n01]
 
-            ! Rotate so that v(1) is physical bottom-left (min y, then min x)
             call rotate_start_bottom_left(v, x, y)
 
-            ! Enforce CCW orientation; if signed area < 0, reverse two vertices
             if (signed_area(v, Xp) < 0.0_dp) then
                 call enforce_ccw(v)
                 write(*, '(A, I6, A, 2(F8.4, A, F8.4, A))') &
@@ -292,13 +286,11 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
       write(unit_v, '(I10)') 9   ! VTK_QUAD
     end do
 
-    ! 5) Cell Data: Material IDs
     write(unit_v, '(A, I10)') "CELL_DATA ", n_sub_elems
     write(unit_v, '(A)') "SCALARS Material_ID int 1"
     write(unit_v, '(A)') "LOOKUP_TABLE default"
     
     do ee = 1, mesh%n_elems
-        ! Every sub-cell created from the parent element gets the same material tag
         do i = 1, ncells_elem
             write(unit_v, '(I10)') mesh%mats(ee)
         end do
@@ -316,13 +308,11 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
 
     close(unit_v)
 
-    ! 6) Cleanup
     deallocate(xi_grid, eta_grid, N_eval, Xp, Up, Cells)
 
     print *, ">>> Interpolated visualization saved to ", trim(filename)//".vtk"
-  end subroutine export_vtk
+  end subroutine export_vtk_petsc
 
-  ! Compute shape values with your basis and FE%p permutation
   subroutine GetArbitraryBasis(FE, xi, eta, N)
     type(t_finite), intent(in) :: FE
     real(dp), intent(in) :: xi, eta
@@ -338,7 +328,6 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     end do
   end subroutine GetArbitraryBasis
 
-  ! Rotate v so that v(1) is the bottom-left (min y, then min x) among the 4 points
   subroutine rotate_start_bottom_left(v, x, y)
     integer, intent(inout) :: v(4)
     real(dp), intent(in)   :: x(4), y(4)
@@ -351,7 +340,6 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     v = [ v(mod(idx_bl-1,4)+1), v(mod(idx_bl  ,4)+1), v(mod(idx_bl+1,4)+1), v(mod(idx_bl+2,4)+1) ]
   end subroutine rotate_start_bottom_left
 
-  ! Signed area (2*area) of quad corner loop in Xp; positive => CCW
   pure real(dp) function signed_area(v, Xp) result(A)
     integer, intent(in) :: v(4)
     real(dp), intent(in) :: Xp(:, :)
@@ -359,14 +347,12 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     A = 0.0_dp
     do k = 1, 4
       k2 = merge(1, k+1, k==4)
-      idx1 = v(k)+1   ! Xp is 1-based; v holds 0-based indices
+      idx1 = v(k)+1 
       idx2 = v(k2)+1
       A = A + ( Xp(idx1,1)*Xp(idx2,2) - Xp(idx2,1)*Xp(idx1,2) )
     end do
-    ! A is actually 2*area; sign is what we need
   end function signed_area
 
-  ! Reverse orientation to CCW by swapping two vertices (keep v(1) fixed)
   subroutine enforce_ccw(v)
     integer, intent(inout) :: v(4)
     integer :: tmp

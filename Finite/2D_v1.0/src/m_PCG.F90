@@ -27,44 +27,6 @@ implicit none
 
 contains 
 
-subroutine PCG_Apply_Dirichlet(A, B, indices)
-        type(t_mat), intent(inout) :: A
-        type(t_VEC), intent(inout) :: B
-        integer,     intent(in)    :: indices(:)
-        integer :: i, target_row, k, row_idx
-        real(dp) :: val_to_subtract
-
-        do i = 1, size(indices)
-            target_row = indices(i) + 1 ! Convert 0-based to 1-based
-
-            ! 1. Zero the Row and set Diagonal to 1
-            do k = A%row_ptr(target_row), A%row_ptr(target_row+1) - 1
-                if (A%col(k) == target_row) then
-                    A%val(k) = 1.0_dp
-                else
-                    A%val(k) = 0.0_dp
-                end if
-            end do
-
-            ! 2. Zero the Column to maintain symmetry
-            ! This is the expensive part in CSR, but necessary for CG
-            do row_idx = 1, size(A%row_ptr) - 1
-                if (row_idx == target_row) cycle 
-                
-                do k = A%row_ptr(row_idx), A%row_ptr(row_idx+1) - 1
-                    if (A%col(k) == target_row) then
-                        ! If we had a non-zero BC (e.g., flux=10.0), we would do:
-                        ! B%vec(row_idx) = B%vec(row_idx) - A%val(k) * BC_VALUE
-                        A%val(k) = 0.0_dp
-                    end if
-                end do
-            end do
-            
-            ! 3. Set RHS for the boundary node to 0.0 (Vacuum)
-            B%vec(target_row) = 0.0_dp 
-        end do
-    end subroutine PCG_Apply_Dirichlet
-
     subroutine assemble_PCG_matrix(MAT_DATA, A_MAT_PCG, mesh, FE, Quad, NGRP, MATIDS)
         type(t_material),       intent(in)  :: MAT_DATA(:)
         type(t_mesh),           intent(in)  :: mesh
@@ -138,7 +100,7 @@ subroutine PCG_Apply_Dirichlet(A, B, indices)
         type(t_quadrature),     intent(in)  :: Quad
         integer,                intent(in)  :: NGRP
         real(dp),               intent(in)  :: S_ext(:,:) 
-        type(t_VEC), allocatable,  intent(out) :: B_VEC(:)
+        type(t_VEC), allocatable,  intent(inout) :: B_VEC(:)
 
         integer  :: ee, g, i, q, row
         real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV, local_val
@@ -245,7 +207,7 @@ subroutine PCG_Apply_Dirichlet(A, B, indices)
         type(t_VEC), intent(inout) :: B_STRUCT
 
         if (allocated(B_STRUCT%vec)) deallocate(B_STRUCT%vec)
-        allocate(B_STRUCT%vec(n_nodes)) ! Matching your 0-based 'row'
+        allocate(B_STRUCT%vec(n_nodes))
         
         B_STRUCT%vec = 0.0_dp
     end subroutine PCG_VEC_INIT
@@ -258,6 +220,85 @@ subroutine PCG_Apply_Dirichlet(A, B, indices)
         B_STRUCT%vec(row) = B_STRUCT%vec(row) + local_val
     end subroutine PCG_VEC_ALLOCATION
 
+    subroutine assemble_multigroup_fission_pcg(Q_PCG, mesh, FE, Quad, materials, X_PCG, n_groups, k_eff)
+        type(t_vec), intent(inout)      :: Q_PCG
+        type(t_mesh), intent(in)        :: mesh
+        type(t_finite), intent(in)      :: FE
+        type(t_quadrature), intent(in)  :: Quad
+        type(t_material), intent(in)    :: materials(:)
+        type(t_vec), intent(in)         :: X_PCG(:)
+        integer, intent(in)             :: n_groups
+        real(dp), intent(in)            :: k_eff
+
+        integer :: ee, g, i, q, mat_id
+        real(dp) :: detJ, dV, local_phi_fission, inv_k
+        real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), phi_nodes(FE%n_basis)
+        integer  :: idx(FE%n_basis)
+        
+        inv_k = 1.0_dp / k_eff
+        Q_PCG%vec = 0.0_dp
+
+        do ee = 1, mesh%n_elems
+            mat_id = mesh%mats(ee)
+            idx = mesh%elems(ee, :)
+            do i = 1, FE%n_basis; elem_coords(i, :) = mesh%nodes(idx(i), :); end do
+
+            do q = 1, Quad%NoPoints
+                call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+                dV = detJ * Quad%W(q)
+                
+                local_phi_fission = 0.0_dp
+                do g = 1, n_groups
+                    phi_nodes = X_PCG(g)%vec(idx)
+                    local_phi_fission = local_phi_fission + materials(mat_id)%nuSigF(g) * dot_product(FE%N(q, :), phi_nodes)
+                end do
+
+                do i = 1, FE%n_basis
+                    Q_PCG%vec(idx(i)) = Q_PCG%vec(idx(i)) + local_phi_fission * FE%N(q, i) * dV
+                end do
+            end do
+        end do
+    end subroutine
+
+    subroutine calculate_total_production_pcg(total_prod, X_PCG, mesh, FE, Quad, materials, n_groups)
+        real(dp), intent(out)           :: total_prod
+        type(t_vec), intent(in)         :: X_PCG(:)
+        type(t_mesh), intent(in)        :: mesh
+        type(t_finite), intent(in)      :: FE
+        type(t_quadrature), intent(in)  :: Quad
+        type(t_material), intent(in)    :: materials(:)
+        integer, intent(in)             :: n_groups
+
+        integer  :: ee, g, i, q, mat_id
+        integer  :: idx(FE%n_basis)
+        real(dp) :: detJ, dV, local_phi, elem_phi(FE%n_basis)
+        real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis)
+
+        total_prod = 0.0_dp
+
+        do ee = 1, mesh%n_elems
+            mat_id = mesh%mats(ee)
+            idx = mesh%elems(ee, :)
+            
+            do i = 1, FE%n_basis
+                elem_coords(i, :) = mesh%nodes(idx(i), :)
+            end do
+
+            do q = 1, Quad%NoPoints
+                call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+                dV = detJ * Quad%W(q)
+                
+                do g = 1, n_groups
+                    elem_phi = X_PCG(g)%vec(idx)
+                    
+                    local_phi = dot_product(FE%N(q, :), elem_phi)
+                    
+                    total_prod = total_prod + materials(mat_id)%nuSigF(g) * local_phi * dV
+                end do
+            end do
+        end do
+    end subroutine calculate_total_production_pcg
+
     !-------------------------
     ! Principle Conjugation Gradient (PCG) Algorithm driver, solving Ax=b
     !-------------------------
@@ -266,26 +307,16 @@ subroutine PCG_Apply_Dirichlet(A, B, indices)
         type(t_mat), intent(in) :: A_MAT_PCG
         type(t_vec), intent(inout) :: x, b
         real(8) :: alpha, beta
-        integer :: ii, k
+        integer :: ii
         integer, intent(in)  :: PCG_mode, max_iter
 
-        real(8) :: rho_old, rho_new, denom !residual_norm
+        real(8) :: rho_old, rho_new, denom
         real(8), allocatable :: L_AA(:), U_AA(:), diag(:), r(:), d(:), z(:), q(:)
         integer, allocatable :: L_IA(:), L_JA(:), U_IA(:), U_JA(:)
         logical :: nan_detected
 
         associate(AA => A_MAT_PCG%val, JA => A_MAT_PCG%col, IA => A_MAT_PCG%row_ptr, &
                   xv => x%vec, bv => b%vec)
-
-                  print *, "DEBUG: IA size:", size(IA), " JA size:", size(JA), " xv size:", size(xv)
-    
-        do k = 1, size(JA)
-            if (JA(k) <= 0 .or. JA(k) > size(xv)) then
-                print *, "FATAL: Bad column index at JA(", k, ") =", JA(k)
-                print *, "Vector size is:", size(xv)
-                stop
-            end if
-        end do
 
         if (.not. allocated(r)) allocate(r(size(bv)))
         if (.not. allocated(d)) allocate(d(size(bv)))
@@ -382,7 +413,7 @@ subroutine PCG_Apply_Dirichlet(A, B, indices)
                 exit
             end if
 
-            if (abs(rho_old) < 1.0d-22) then
+            if (abs(rho_old) < 1.0d-24) then
                 !print *, "WARNING: rho_old too small in iteration", ii, ":", rho_old
                 exit
             end if
@@ -391,6 +422,9 @@ subroutine PCG_Apply_Dirichlet(A, B, indices)
             
             beta = rho_new / rho_old
             d = z + beta*d
+
+            if (rho_new < 1.0d-10 * rho_old) exit ! Converged!
+
             rho_old = rho_new
         end do
 
