@@ -7,7 +7,7 @@ set(PETSC_INCLUDES "/usr/lib/petsc/include")
 set(PETSC_LIBS "/usr/lib/petsc/lib/libpetsc.so")
 
 set(CMAKE_Fortran_FLAGS "-Wall -ffree-line-length-none -I${PETSC_INCLUDES}")
-set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -g -Og -fopenmp")
+set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -pg -Og -fopenmp")
 
 set(CMAKE_Fortran_MODULE_DIRECTORY ${CMAKE_BINARY_DIR}/fortran_mods)
 file(MAKE_DIRECTORY ${CMAKE_Fortran_MODULE_DIRECTORY})
@@ -22,6 +22,7 @@ add_library(src STATIC
     src/m_finite_elements.F90
     src/m_material.F90
     src/m_outpVTK.F90
+    src/m_boundaries.F90
 )
 
 set_target_properties(src PROPERTIES Fortran_PREPROCESS ON)

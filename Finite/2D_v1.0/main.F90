@@ -31,7 +31,7 @@ program fem2d_main
     type(t_finite)          :: FE
     type(t_material), allocatable :: materials(:)
     
-    integer                 :: n_groups, i, k, iter
+    integer                 :: n_groups, i, k, outer_iter
     real(dp), allocatable   :: S_ext(:,:)
     integer                 :: solver_choice, max_iter_inner, max_iter_power
     logical                 :: is_eigenvalue_problem
@@ -56,7 +56,7 @@ program fem2d_main
 
     call InitialiseFE(FE, Quad, QuadBound)
     call InitialiseMaterials(materials, n_groups)
-    
+
     call InitialiseBoundaries(bc_config(1), 2, BC_VACUUM, 0.0_dp)
     call InitialiseBoundaries(bc_config(2), 4, BC_REFLECTIVE, 0.0_dp)
 
@@ -97,7 +97,7 @@ program fem2d_main
     write(*,*) merge(">>> Starting Power Iteration ...", &
                      ">>> Starting Global Assembly ...", is_eigenvalue_problem)
 
-    do iter = 1, merge(max_iter_power, 1, is_eigenvalue_problem)
+    do outer_iter = 1, merge(max_iter_power, 1, is_eigenvalue_problem)
         k_old = k_eff
         
         do i = 1, n_groups
@@ -151,18 +151,21 @@ program fem2d_main
 
         k_eff = total_prod 
 
-        if (solver_choice == SOLVER_PETSC) then
-            call VecScale(X_VEC(1), 1.0_dp / k_eff, ierr)
-        else
-            X_PCG(1)%vec = X_PCG(1)%vec / k_eff
-        end if
-
-        write(*,'(A,I3,A,F12.8)') " Iteration: ", iter, "  k-eff: ", k_eff
+        write(*,'(A,I3,A,F12.8)') " Iteration: ", outer_iter, "  k-eff: ", k_eff
         if (abs(k_eff - k_old) < 1e-7) exit
+
+        do i = 1, n_groups
+            if (solver_choice == SOLVER_PETSC) then
+                call VecScale(X_VEC(i), 1.0_dp / k_eff, ierr)
+            else
+                X_PCG(i)%vec = X_PCG(i)%vec / k_eff
+            end if
+        end do
+
     end do
 
     if (solver_choice == SOLVER_PETSC) then
-        call export_vtk_petsc("solution_output", FE, mesh, X_VEC, n_groups, 20, .true.)
+        call export_vtk_petsc("solution_output", FE, mesh, X_VEC, n_groups, 2, .true.)
         do i = 1, n_groups
             call KSPDestroy(ksp_solvers(i), ierr)
             call MatDestroy(A_MAT(i), ierr)
@@ -171,9 +174,11 @@ program fem2d_main
         end do
         call PetscFinalize(ierr)
     else
-        call export_vtk_pcg("solution_output", FE, mesh, X_PCG, n_groups, 20, .true.)
+        call export_vtk_pcg("solution_output", FE, mesh, X_PCG, n_groups, 2, .true.)
     end if
     if (allocated(S_ext)) deallocate(S_ext)
     write(*,*) ">>> Simulation Finished."
+
+    call system("gprof exe > analysis.txt && python3 -m gprof2dot -f prof analysis.txt | dot -Tsvg -o profile_map.svg") 
 
 end program fem2d_main
