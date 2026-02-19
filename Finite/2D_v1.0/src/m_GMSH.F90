@@ -3,11 +3,11 @@ module m_GMSH
     use m_types, only: t_mesh
     implicit none
     private
-    public :: parse
+    public :: parse_GMSH
 
 contains
 
-    subroutine parse(filename, mesh, write_files)
+    subroutine parse_GMSH(filename, mesh, write_files)
         character(len=*), intent(in)  :: filename
         type(t_mesh),   intent(out)   :: mesh
         logical,          intent(in), optional :: write_files
@@ -160,7 +160,7 @@ contains
         if (allocated(elem_ptr))      deallocate(elem_ptr)
         if (allocated(elem_type))     deallocate(elem_type)
         if (allocated(material_all))  deallocate(material_all)
-    end subroutine parse
+    end subroutine parse_GMSH
 
     subroutine write_edges(n_lines, edges, edge_mats)
         integer, intent(in) :: n_lines, edges(:,:), edge_mats(:)

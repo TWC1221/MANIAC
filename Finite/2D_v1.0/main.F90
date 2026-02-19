@@ -6,7 +6,7 @@
 program fem2d_main
     use m_constants
     use m_types
-    use m_GMSH,            only: parse
+    use m_GMSH
     use m_quadrature
     use m_finite_elements
     use m_material
@@ -39,7 +39,7 @@ program fem2d_main
     real(dp)                :: k_eff, k_eff_prime
     integer, parameter      :: SOLVER_PCG = 1, SOLVER_PETSC = 2
 
-    solver_choice          = SOLVER_PCG
+    solver_choice          = SOLVER_PETSC
     preconditioner_choice  = PRECON_NONE
     is_eigenvalue_problem  = .true.         
     n_groups               = 3
@@ -47,17 +47,18 @@ program fem2d_main
     max_inner_iter         = 20         
     max_CG_iter            = 10000          
 
-    call parse("../VTKmesh.vtk", mesh, write_files = .true.)
+    call parse_GMSH("../VTKmesh.vtk", mesh, write_files = .true.)
     FE%n_basis = mesh%nloc
     FE%order   = nint(sqrt(real(FE%n_basis, dp))) - 1
 
     call Get1DLineQuad(FE%order + 1, QuadBound)
     call QuadrilateralQuadrature(Quad, FE%order + 1)
-    call InitialiseFiniteElements(FE, Quad, QuadBound, write_nodal_map = .true.)
-    call InitialiseMaterials(materials, n_groups, printout = .true.)
 
-    call InitialiseBoundaries(bc_config(1), 2, BC_VACUUM, 0.0_dp)
-    call InitialiseBoundaries(bc_config(2), 3, BC_DIRICHLET, 0.0_dp) 
+    call InitialiseFiniteElements(FE, Quad, QuadBound, write_nodal_map = .false.)
+    call InitialiseMaterials(materials, mesh, n_groups, "../InputDeck.txt", printout = .false.)
+
+    call InitialiseBoundaries(bc_config(1), 4, BC_VACUUM, 0.0_dp)
+    ! call InitialiseBoundaries(bc_config(2), 2, BC_REFLECTIVE, 0.0_dp) 
 
     allocate(S_ext(mesh%n_elems, n_groups)); S_ext = 1.0_dp
 
@@ -105,6 +106,7 @@ program fem2d_main
 
     write(*,*) merge(">>> Starting Power Iteration ...", &
                      ">>> Solving for Neutron Flux ...", is_eigenvalue_problem)
+
     k_eff = 1.0_dp    
     do outer_iter = 1, max_outer_iter
         k_eff_prime = k_eff
@@ -148,7 +150,7 @@ program fem2d_main
     end do
 
     if (solver_choice == SOLVER_PETSC) then
-        call export_vtk_petsc("solution_output", FE, mesh, X_VEC, n_groups, 20, .false.)
+        call export_vtk_petsc("solution_output", FE, mesh, X_VEC, n_groups, 2, .true.)
         call PetscFinalize(ierr)
     else
         call export_vtk_pcg("solution_output", FE, mesh, X_PCG, n_groups, 20, .true.)
