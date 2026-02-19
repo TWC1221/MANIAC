@@ -7,10 +7,12 @@ module m_finite_elements
         
     contains
 
-    subroutine InitialiseFE(FE, Quad, QuadBound)
+    subroutine InitialiseFiniteElements(FE, Quad, QuadBound, write_nodal_map)
         type(t_finite), intent(inout) :: FE
         type(t_quadrature), intent(in) :: Quad, QuadBound
-        integer :: gp, i, j, n, Poly
+        integer :: gp, i, j, n, idx, Poly
+        logical :: write_nodal_map
+
         
         Poly = FE%order
         FE%n_basis = (Poly + 1)**2
@@ -34,11 +36,23 @@ module m_finite_elements
         allocate(FE%dN_B(QuadBound%NoPoints, Poly + 1))
         allocate(FE%p(FE%n_basis))
 
-        select case (FE%n_basis)
-        case (4)  ; FE%p = [1, 2, 4, 3]                  ! Linear
-        case (9)  ; FE%p = [1, 5, 2, 8, 9, 6, 4, 7, 3]   ! Quadratic
-        end select
-            
+
+        call GetVTKOrderVector(FE)
+        if (write_nodal_map) then
+        print*, "ELement Nodal INDEX Map:"
+        print*, "---------------------------------"
+        do j = Poly + 1, 1, -1
+            write(*, '(A2, I2, A3)', advance='no') "j=", j, " |"
+            do i = 1, Poly + 1
+                idx = i + (j-1)*(Poly + 1)
+                write(*, '(I4)', advance='no') FE%p(idx)
+            end do
+            write(*,*)
+        end do
+        print*, "---------------------------------"
+        write(*, '(A, I2)') " Element Order: ", Poly
+        end if
+
         do gp = 1, Quad%NoPoints
             n = 1
             do j = 1, Poly + 1     ! y-direction
@@ -64,7 +78,7 @@ module m_finite_elements
                 FE%dN_B(gp, i) = FE_basis_derivative_1D(FE, Poly, i, QuadBound%Xi(gp))
             end do
         end do
-    end subroutine InitialiseFE
+    end subroutine InitialiseFiniteElements
 
     subroutine GetMapping(FE, gp, elem_coords, dN_dx, dN_dy, detJ)
         type(t_finite), intent(in)   :: FE
@@ -110,6 +124,57 @@ module m_finite_elements
         end do
 
     end subroutine GetMapping
+
+subroutine GetVTKOrderVector(FE)
+        type(t_finite), intent(inout) :: FE
+        integer :: P, n, i, j, idx, L, curP
+        integer, allocatable :: temp_map(:,:)
+
+        P = FE%order
+        if (allocated(FE%p)) deallocate(FE%p)
+        allocate(FE%p(FE%n_basis))
+        allocate(temp_map(P+1, P+1))
+
+        n = 1
+        L = 1
+        curP = P
+
+        do while (curP >= 1)
+            temp_map(L, L)             = n; n = n + 1 ! BL
+            temp_map(L + curP, L)      = n; n = n + 1 ! BR
+            temp_map(L + curP, L + curP)= n; n = n + 1 ! TR
+            temp_map(L, L + curP)      = n; n = n + 1 ! TL
+
+            if (curP > 1) then
+                do i = L + 1, L + curP - 1
+                    temp_map(i, L) = n; n = n + 1 ! Bottom
+                end do
+                do j = L + 1, L + curP - 1
+                    temp_map(L + curP, j) = n; n = n + 1 ! Right
+                end do
+                do i = L + curP - 1, L + 1, -1
+                    temp_map(i, L + curP) = n; n = n + 1 ! Top
+                end do
+                do j = L + curP - 1, L + 1, -1
+                    temp_map(L, j) = n; n = n + 1 ! Left
+                end do
+            end if
+
+            L = L + 1
+            curP = curP - 2
+        end do
+
+        if (curP == 0) temp_map(L, L) = n
+
+        idx = 1
+        do j = 1, P+1
+            do i = 1, P+1
+                FE%p(idx) = temp_map(i, j)
+                idx = idx + 1
+            end do
+        end do
+        deallocate(temp_map)
+    end subroutine GetVTKOrderVector
 
     subroutine finite_1D_positions(Finite, PolyOrder)
         type(t_finite), intent(inout) :: Finite
@@ -168,4 +233,5 @@ module m_finite_elements
         real(8)              :: mat(size(a,1), size(b,1))
         mat = spread(a, dim=2, ncopies=size(b,1)) * spread(b, dim=1, ncopies=size(a,1))
     end function outer_product
+    
 end module m_finite_elements

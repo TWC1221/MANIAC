@@ -24,7 +24,7 @@ contains
         integer,  allocatable :: elem_type(:)       
         integer,  allocatable :: material_all(:)    
 
-        integer :: n_quads, n_lines
+        integer :: n_quads, n_lines, n_edge_nodes
         integer :: iq, il
 
         do_write = .false.; if (present(write_files)) do_write = write_files
@@ -101,18 +101,22 @@ contains
         n_lines = count(elem_type == 3 .or. elem_type == 21)
         
         mesh%nloc = 0
-        if (any(elem_type == 28)) then
-            mesh%nloc = 9
-        else if (any(elem_type == 9)) then
-            mesh%nloc = 4
-        end if
+        n_edge_nodes = 0
+
+        do i = 1, nelem
+            if (elem_type(i) == 9 .or. elem_type(i) == 28) then
+                mesh%nloc = max(mesh%nloc, connectivity(elem_ptr(i)))
+            else if (elem_type(i) == 3 .or. elem_type(i) == 21) then
+                n_edge_nodes = max(n_edge_nodes, connectivity(elem_ptr(i)))
+            end if
+        end do
 
         allocate(mesh%nodes(mesh%n_nodes, 2))
         mesh%nodes(:,1) = nodes3(1,:)   
         mesh%nodes(:,2) = nodes3(2,:)   
 
         allocate(mesh%elems(n_quads, mesh%nloc))
-        allocate(mesh%edges(n_lines, 3))
+        allocate(mesh%edges(n_lines, n_edge_nodes))
         allocate(mesh%mats(n_quads))
         allocate(mesh%edge_mats(n_lines))  
 
@@ -148,7 +152,7 @@ contains
             call write_elements(nelem, connectivity, elem_ptr, elem_type)
             call write_materials(material_all)
             call write_edges(n_lines, mesh%edges, mesh%edge_mats)
-            print *, "Mesh successfully parsed and written to .dat files."
+            write(*,*) ">>> Mesh Parsed and Written to .dat files."
         end if
 
         if (allocated(nodes3))        deallocate(nodes3)

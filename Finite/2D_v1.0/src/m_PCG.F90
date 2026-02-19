@@ -19,118 +19,187 @@ use m_material
 use m_quadrature
 use m_types
 implicit none
-    integer, parameter :: PCG_PRECON_NONE = 0
-    integer, parameter :: PCG_PRECON_CHOLESKY = 1
-    integer, parameter :: PCG_PRECON_ILU = 2
-    integer, parameter :: PCG_PRECON_JACOBI = 3
-    integer, parameter :: PETsc = 4
+    integer, parameter :: PRECON_NONE = 0
+    integer, parameter :: PRECON_CHOLESKY = 1
+    integer, parameter :: PRECON_ILU = 2
+    integer, parameter :: PRECON_JACOBI = 3
 
 contains 
 
-    subroutine assemble_PCG_matrix(MAT_DATA, A_MAT_PCG, mesh, FE, Quad, NGRP, MATIDS)
-        type(t_material),       intent(in)  :: MAT_DATA(:)
-        type(t_mesh),           intent(in)  :: mesh
-        type(t_finite),         intent(in)  :: FE
-        type(t_quadrature),     intent(in)  :: Quad
-        integer,                intent(in)  :: NGRP
-        integer,                intent(in)  :: MATIDS(:)
-        type(t_mat), allocatable,  intent(out) :: A_MAT_PCG(:)
+subroutine assemble_PCG_matrix(MAT_DATA, A_MAT_PCG, mesh, FE, Quad, NGRP, MATIDS)
+    type(t_material),       intent(in)  :: MAT_DATA(:)
+    type(t_mesh),           intent(in)  :: mesh
+    type(t_finite),         intent(in)  :: FE
+    type(t_quadrature),     intent(in)  :: Quad
+    integer,                intent(in)  :: NGRP
+    integer,                intent(in)  :: MATIDS(:)
+    type(t_mat), allocatable,  intent(out) :: A_MAT_PCG(:)
+    
+    integer :: ee, g, i, j, q, mat_id, row, col
+    integer, allocatable :: nnz(:)
+    real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV, val
+
+    allocate(nnz(mesh%n_nodes)); nnz = 0
+    do ee = 1, mesh%n_elems
+        do i = 1, FE%n_basis
+            row = mesh%elems(ee, i)
+            nnz(row) = nnz(row) + FE%n_basis
+        end do
+    end do
+    do i = 1, mesh%n_nodes; nnz(i) = min(nnz(i), mesh%n_nodes); end do
+
+    if (allocated(A_MAT_PCG)) deallocate(A_MAT_PCG)
+    allocate(A_MAT_PCG(NGRP))
+
+    do g = 1, NGRP
+        call PCG_MAT_INIT(A_MAT_PCG, mesh, nnz, g)
+        A_MAT_PCG(g)%row_ptr(1) = 1
+        do i = 1, mesh%n_nodes
+            A_MAT_PCG(g)%row_ptr(i+1) = A_MAT_PCG(g)%row_ptr(i) + nnz(i)
+        end do
+    end do
+
+    do ee = 1, mesh%n_elems
+        mat_id = MATIDS(ee)
+
+        do i = 1, FE%n_basis
+            elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
+        end do
         
-        integer :: ee, g, i, j, q, mat_id, row, col
-        integer, allocatable :: nnz(:)
-        real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV, val
-
-        allocate(nnz(mesh%n_nodes)); nnz = 0
-        do ee = 1, mesh%n_elems
-            do i = 1, FE%n_basis
-                row = mesh%elems(ee, i)
-                nnz(row) = nnz(row) + FE%n_basis
-            end do
-        end do
-        do i = 1, mesh%n_nodes; nnz(i) = min(nnz(i), mesh%n_nodes); end do
-
-        if (allocated(A_MAT_PCG)) deallocate(A_MAT_PCG)
-        allocate(A_MAT_PCG(NGRP))
-
-        do g = 1, NGRP
-            call PCG_MAT_INIT(A_MAT_PCG, mesh, nnz, g)
-            A_MAT_PCG(g)%row_ptr(1) = 1
-            do i = 1, mesh%n_nodes
-                A_MAT_PCG(g)%row_ptr(i+1) = A_MAT_PCG(g)%row_ptr(i) + nnz(i)
-            end do
-        end do
-
-        do ee = 1, mesh%n_elems
-            mat_id = MATIDS(ee)
-
-            do i = 1, FE%n_basis
-                elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
-            end do
+        do q = 1, Quad%NoPoints
+            call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+            dV = detJ * Quad%W(q)
             
-            do q = 1, Quad%NoPoints
-                call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
-                dV = detJ * Quad%W(q)
-                
-                do g = 1, NGRP
-                    do i = 1, FE%n_basis
-                        row = mesh%elems(ee, i)
-                        do j = 1, FE%n_basis
-                            col = mesh%elems(ee, j)
+            do g = 1, NGRP
+                do i = 1, FE%n_basis
+                    row = mesh%elems(ee, i)
+                    do j = 1, FE%n_basis
+                        col = mesh%elems(ee, j)
+                        
+                        val = (MAT_DATA(mat_id)%D(g) * (dN_dx(i)*dN_dx(j) + dN_dy(i)*dN_dy(j)) + &
+                            MAT_DATA(mat_id)%SigmaR(g) * FE%N_mat(q,i,j)) * dV
                             
-                            val = (MAT_DATA(mat_id)%D(g) * (dN_dx(i)*dN_dx(j) + dN_dy(i)*dN_dy(j)) + &
-                                MAT_DATA(mat_id)%SigmaR(g) * FE%N_mat(q,i,j)) * dV
-                                
-                            call PCG_MAT_ALLOCATION(A_MAT_PCG(g), row, col, val)
-                        end do
+                        call PCG_MAT_ALLOCATION(A_MAT_PCG(g), row, col, val)
                     end do
                 end do
             end do
         end do
+    end do
 
-        do g = 1, NGRP
-            call PCG_COMPRESS_CSR(A_MAT_PCG(g), mesh%n_nodes)
+    do g = 1, NGRP
+        call PCG_COMPRESS_CSR(A_MAT_PCG(g), mesh%n_nodes)
+    end do
+
+    deallocate(nnz)
+end subroutine assemble_PCG_matrix
+
+subroutine assemble_multigroup_source_pcg(B, mesh, FE, Quad, mats, X_VEC, X_SNAP, &
+                                            n_groups, k_eff, group_idx, &
+                                            is_eigen, S_ext)
+    type(t_vec), intent(inout)        :: B           
+    type(t_mesh), intent(in)          :: mesh
+    type(t_finite), intent(in)        :: FE
+    type(t_quadrature), intent(in)    :: Quad
+    type(t_material), intent(in)      :: mats(:)
+    type(t_vec), intent(in)           :: X_VEC(:)    ! The iterative flux (for scattering)
+    type(t_vec), intent(in)           :: X_SNAP(:)   ! The snapshot flux (for fission)
+    integer, intent(in)               :: n_groups
+    real(dp), intent(in)              :: k_eff
+    integer, intent(in)               :: group_idx   
+    logical, intent(in)               :: is_eigen
+    real(dp), intent(in)              :: S_ext(:,:)
+
+    integer  :: e, q, i, g, row, mat_id
+    real(dp) :: detJ, weight, total_src
+    real(dp) :: phi_snap, phi_iter
+    real(dp) :: fission_density, scattering_src
+    real(dp) :: local_B(FE%n_basis)
+    
+    real(dp) :: elem_coords(FE%n_basis, 2)
+    real(dp) :: dN_dx(FE%n_basis), dN_dy(FE%n_basis)
+
+    B%vec = 0.0_dp
+
+    do e = 1, mesh%n_elems
+        local_B = 0.0_dp
+        mat_id = mesh%mats(e)
+        
+        do i = 1, FE%n_basis
+            elem_coords(i,:) = mesh%nodes(mesh%elems(e,i), :)
         end do
 
-        deallocate(nnz)
-    end subroutine assemble_PCG_matrix
+        do q = 1, Quad%NoPoints
+            call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+            weight = Quad%W(q) * detJ
+            
+            fission_density = 0.0_dp
+            scattering_src  = 0.0_dp
 
-    subroutine assemble_PCG_source_vec(B_VEC, mesh, FE, Quad, NGRP, S_ext)
-        type(t_mesh),           intent(in)  :: mesh
-        type(t_finite),         intent(in)  :: FE
-        type(t_quadrature),     intent(in)  :: Quad
-        integer,                intent(in)  :: NGRP
-        real(dp),               intent(in)  :: S_ext(:,:) 
-        type(t_VEC), allocatable,  intent(inout) :: B_VEC(:)
+            do g = 1, n_groups
+                phi_snap = sum(X_SNAP(g)%vec(mesh%elems(e,:)) * FE%N(q,:))
+                fission_density = fission_density + mats(mat_id)%NuSigF(g) * phi_snap
 
-        integer  :: ee, g, i, q, row
-        real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV, local_val
+                if (g /= group_idx) then
+                    phi_iter = sum(X_VEC(g)%vec(mesh%elems(e,:)) * FE%N(q,:))
+                    scattering_src = scattering_src + mats(mat_id)%SigmaS(group_idx, g) * phi_iter
+                end if
+            end do
 
-        if (allocated(B_VEC)) deallocate(B_VEC)
-        allocate(B_VEC(NGRP))
+            if (is_eigen) then
+                total_src = (mats(mat_id)%Chi(group_idx) / k_eff) * fission_density + scattering_src
+            else
+                total_src = S_ext(e, group_idx) + scattering_src
+            end if
 
-        do g = 1, NGRP
-            call PCG_VEC_INIT(mesh%n_nodes, B_VEC(g))
-        end do
-
-        do ee = 1, mesh%n_elems
             do i = 1, FE%n_basis
-                elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
-            end do
-
-            do q = 1, Quad%NoPoints
-                call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
-                dV = detJ * Quad%W(q)
-                
-                do g = 1, NGRP
-                    do i = 1, FE%n_basis
-                        row = mesh%elems(ee, i)
-                        local_val = S_ext(ee, g) * FE%N(q, i) * dV
-                        call PCG_VEC_ALLOCATION(B_VEC(g), row, local_val)
-                    end do
-                end do
+                local_B(i) = local_B(i) + FE%N(q,i) * total_src * weight
             end do
         end do
-    end subroutine assemble_PCG_source_vec
+
+        do i = 1, FE%n_basis
+            row = mesh%elems(e,i)
+            B%vec(row) = B%vec(row) + local_B(i)
+        end do
+    end do
+end subroutine assemble_multigroup_source_pcg
+
+    ! subroutine assemble_PCG_source_vec(B_VEC, mesh, FE, Quad, NGRP, S_ext)
+    !     type(t_mesh),           intent(in)  :: mesh
+    !     type(t_finite),         intent(in)  :: FE
+    !     type(t_quadrature),     intent(in)  :: Quad
+    !     integer,                intent(in)  :: NGRP
+    !     real(dp),               intent(in)  :: S_ext(:,:) 
+    !     type(t_VEC), allocatable,  intent(inout) :: B_VEC(:)
+
+    !     integer  :: ee, g, i, q, row
+    !     real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV, local_val
+
+    !     if (allocated(B_VEC)) deallocate(B_VEC)
+    !     allocate(B_VEC(NGRP))
+
+    !     do g = 1, NGRP
+    !         call PCG_VEC_INIT(mesh%n_nodes, B_VEC(g))
+    !     end do
+
+    !     do ee = 1, mesh%n_elems
+    !         do i = 1, FE%n_basis
+    !             elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
+    !         end do
+
+    !         do q = 1, Quad%NoPoints
+    !             call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+    !             dV = detJ * Quad%W(q)
+                
+    !             do g = 1, NGRP
+    !                 do i = 1, FE%n_basis
+    !                     row = mesh%elems(ee, i)
+    !                     local_val = S_ext(ee, g) * FE%N(q, i) * dV
+    !                     call PCG_VEC_ALLOCATION(B_VEC(g), row, local_val)
+    !                 end do
+    !             end do
+    !         end do
+    !     end do
+    ! end subroutine assemble_PCG_source_vec
 
     subroutine PCG_MAT_INIT(A_MAT_PCG, mesh, nnz_array, g)
         type(t_mesh), intent(in) :: mesh
@@ -220,45 +289,45 @@ contains
         B_STRUCT%vec(row) = B_STRUCT%vec(row) + local_val
     end subroutine PCG_VEC_ALLOCATION
 
-    subroutine assemble_multigroup_fission_pcg(Q_PCG, mesh, FE, Quad, materials, X_PCG, n_groups, k_eff)
-        type(t_vec), intent(inout)      :: Q_PCG
-        type(t_mesh), intent(in)        :: mesh
-        type(t_finite), intent(in)      :: FE
-        type(t_quadrature), intent(in)  :: Quad
-        type(t_material), intent(in)    :: materials(:)
-        type(t_vec), intent(in)         :: X_PCG(:)
-        integer, intent(in)             :: n_groups
-        real(dp), intent(in)            :: k_eff
+    ! subroutine assemble_multigroup_fission_pcg(Q_PCG, mesh, FE, Quad, materials, X_PCG, n_groups, k_eff)
+    !     type(t_vec), intent(inout)      :: Q_PCG
+    !     type(t_mesh), intent(in)        :: mesh
+    !     type(t_finite), intent(in)      :: FE
+    !     type(t_quadrature), intent(in)  :: Quad
+    !     type(t_material), intent(in)    :: materials(:)
+    !     type(t_vec), intent(in)         :: X_PCG(:)
+    !     integer, intent(in)             :: n_groups
+    !     real(dp), intent(in)            :: k_eff
 
-        integer :: ee, g, i, q, mat_id
-        real(dp) :: detJ, dV, local_phi_fission, inv_k
-        real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), phi_nodes(FE%n_basis)
-        integer  :: idx(FE%n_basis)
+    !     integer :: ee, g, i, q, mat_id
+    !     real(dp) :: detJ, dV, local_phi_fission, inv_k
+    !     real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), phi_nodes(FE%n_basis)
+    !     integer  :: idx(FE%n_basis)
         
-        inv_k = 1.0_dp / k_eff
-        Q_PCG%vec = 0.0_dp
+    !     inv_k = 1.0_dp / k_eff
+    !     Q_PCG%vec = 0.0_dp
 
-        do ee = 1, mesh%n_elems
-            mat_id = mesh%mats(ee)
-            idx = mesh%elems(ee, :)
-            do i = 1, FE%n_basis; elem_coords(i, :) = mesh%nodes(idx(i), :); end do
+    !     do ee = 1, mesh%n_elems
+    !         mat_id = mesh%mats(ee)
+    !         idx = mesh%elems(ee, :)
+    !         do i = 1, FE%n_basis; elem_coords(i, :) = mesh%nodes(idx(i), :); end do
 
-            do q = 1, Quad%NoPoints
-                call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
-                dV = detJ * Quad%W(q)
+    !         do q = 1, Quad%NoPoints
+    !             call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+    !             dV = detJ * Quad%W(q)
                 
-                local_phi_fission = 0.0_dp
-                do g = 1, n_groups
-                    phi_nodes = X_PCG(g)%vec(idx)
-                    local_phi_fission = local_phi_fission + materials(mat_id)%nuSigF(g) * dot_product(FE%N(q, :), phi_nodes)
-                end do
+    !             local_phi_fission = 0.0_dp
+    !             do g = 1, n_groups
+    !                 phi_nodes = X_PCG(g)%vec(idx)
+    !                 local_phi_fission = local_phi_fission + materials(mat_id)%nuSigF(g) * dot_product(FE%N(q, :), phi_nodes)
+    !             end do
 
-                do i = 1, FE%n_basis
-                    Q_PCG%vec(idx(i)) = Q_PCG%vec(idx(i)) + local_phi_fission * FE%N(q, i) * dV
-                end do
-            end do
-        end do
-    end subroutine
+    !             do i = 1, FE%n_basis
+    !                 Q_PCG%vec(idx(i)) = Q_PCG%vec(idx(i)) + local_phi_fission * FE%N(q, i) * dV
+    !             end do
+    !         end do
+    !     end do
+    ! end subroutine
 
     subroutine calculate_total_production_pcg(total_prod, X_PCG, mesh, FE, Quad, materials, n_groups)
         real(dp), intent(out)           :: total_prod
@@ -326,15 +395,15 @@ contains
             r = bv - CSR_dot_product(AA, JA, IA, xv)
 
         select case(PCG_mode)
-            case(PCG_PRECON_NONE)
+            case(PRECON_NONE)
                 z = r
-            case(PCG_PRECON_CHOLESKY)
+            case(PRECON_CHOLESKY)
                 call Cholesky_CSR(AA, JA, IA, L_AA, L_JA, L_IA)
                 z = PCG_Cholesky_CSR(L_AA, L_JA, L_IA, r)
-            case(PCG_PRECON_ILU)
+            case(PRECON_ILU)
                 call ILU0_CSR(AA, JA, IA, L_AA, L_JA, L_IA, U_AA, U_JA, U_IA)
                 z = PCG_ILU_CSR(L_AA, L_JA, L_IA, U_AA, U_JA, U_IA, r)
-            case(PCG_PRECON_JACOBI)
+            case(PRECON_JACOBI)
                 call Jacobi_CSR(AA, JA, IA, diag)
                 z = r/diag
         end select
@@ -390,13 +459,13 @@ contains
 
             ! Apply preconditioner to new residual
             select case(PCG_mode)
-                case(PCG_PRECON_NONE)
+                case(PRECON_NONE)
                     z = r
-                case(PCG_PRECON_CHOLESKY)
+                case(PRECON_CHOLESKY)
                     z = PCG_Cholesky_CSR(L_AA, L_JA, L_IA, r)
-                case(PCG_PRECON_ILU)
+                case(PRECON_ILU)
                     z = PCG_ILU_CSR(L_AA, L_JA, L_IA, U_AA, U_JA, U_IA, r)
-                case(PCG_PRECON_JACOBI)
+                case(PRECON_JACOBI)
                     z = r / diag
             end select
 
