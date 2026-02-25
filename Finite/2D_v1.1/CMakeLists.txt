@@ -28,7 +28,7 @@ add_library(src STATIC
 set_target_properties(src PROPERTIES Fortran_PREPROCESS ON)
 
 add_executable(exe 2D_V1.1.F90)
-#add_executable(exe VTK_Extractor.F90)
+#add_executable(exe VTK_Extractor_V2.0.F90)
 set_target_properties(exe PROPERTIES Fortran_PREPROCESS ON)
 
 target_link_libraries(exe src ${PETSC_LIBS} lapack blas)

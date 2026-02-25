@@ -53,28 +53,30 @@ subroutine apply_bcs(mesh, FE, Quadbound, bc_cfg, A_petsc, A_pcg)
     integer :: i, j, ierr, node_id
     real(dp) :: effective_alpha
 
-    allocate(mask(mesh%n_nodes)); mask = .false.
-    do i = 1, mesh%n_edges
-        if (mesh%edge_mats(i) == bc_cfg%mat_id) then
-            do j = 1, size(mesh%edges, 2)
-                node_id = mesh%edges(i, j)
-                if (node_id > 0) mask(node_id) = .true.
-            end do
-        end if
-    end do
-    if (.not. any(mask)) return
-    bdy_nodes = pack([(i, i=1, mesh%n_nodes)], mask)
-
     select case (bc_cfg%bc_type)
         case (BC_DIRICHLET) 
-            if (present(A_petsc)) then 
-                do i = 1, size(bdy_nodes)
-                    call MatSetValue(A_petsc, bdy_nodes(i)-1, bdy_nodes(i)-1, PENALTY, ADD_VALUES, ierr)
-                end do
-            else
-                do i = 1, size(bdy_nodes)
-                    call pcg_add_value(A_pcg, bdy_nodes(i), bdy_nodes(i), PENALTY)
-                end do
+            allocate(mask(mesh%n_nodes)); mask = .false.
+            do i = 1, mesh%n_edges
+                if (mesh%edge_mats(i) == bc_cfg%mat_id) then
+                    do j = 1, size(mesh%edges, 2)
+                        node_id = mesh%edges(i, j)
+                        if (node_id > 0) mask(node_id) = .true.
+                    end do
+                end if
+            end do
+            
+            if (any(mask)) then
+                bdy_nodes = pack([(i, i=1, mesh%n_nodes)], mask)
+                if (present(A_petsc)) then 
+                    do i = 1, size(bdy_nodes)
+                        call MatSetValue(A_petsc, bdy_nodes(i)-1, bdy_nodes(i)-1, PENALTY, ADD_VALUES, ierr)
+                    end do
+                else
+                    do i = 1, size(bdy_nodes)
+                        call pcg_add_value(A_pcg, bdy_nodes(i), bdy_nodes(i), PENALTY)
+                    end do
+                end if
+                deallocate(bdy_nodes)
             end if
             
         case (BC_VACUUM, BC_ALBEDO)
@@ -85,8 +87,6 @@ subroutine apply_bcs(mesh, FE, Quadbound, bc_cfg, A_petsc, A_pcg)
                 call PCG_Apply_Robin(mesh, FE, QuadBound, bc_cfg%mat_id, effective_alpha, A_pcg)
             end if
     end select
-
-    if (allocated(bdy_nodes)) deallocate(bdy_nodes)
 end subroutine apply_bcs
 
 subroutine PETSC_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)    
@@ -97,60 +97,54 @@ subroutine PETSC_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
     real(dp),           intent(in)    :: alpha
     Mat,                intent(inout) :: A
     
-    integer  :: i, j, k, gp, n1, n2, npe
-    real(dp) :: L, beta, detJ1D
-    integer,  allocatable :: edge_map(:)
-    real(dp), allocatable :: local_M(:,:)
+    integer  :: i, j, k, gp, npe, node_id
+    real(dp) :: beta, detJ1D, dx_dxi, dy_dxi
     PetscInt, allocatable :: edge_nodes(:)
     PetscScalar, allocatable :: vals(:)
-    PetscInt :: npe_p
     PetscErrorCode :: ierr
 
     beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
     npe = FE%order + 1 
-    npe_p = npe
     
-    allocate(edge_map(npe), local_M(npe, npe), edge_nodes(npe), vals(npe*npe))
-
-    ! Pre-calculate the reference 1D mass matrix
-    local_M = 0.0_dp
-    do j = 1, npe
-        do k = 1, npe
-            do gp = 1, QuadBound%NoPoints
-                local_M(j, k) = local_M(j, k) + FE%N_B(gp, j) * FE%N_B(gp, k) * QuadBound%W(gp)
-            end do
-        end do
-    end do
-
-    edge_map(1) = 1
-    if (npe > 1) edge_map(2) = npe
-    if (npe > 2) then
-        do j = 3, npe
-            edge_map(j) = j - 1
-        end do
-    end if
+    allocate(edge_nodes(npe), vals(npe*npe))
 
     do i = 1, mesh%n_edges
         if (mesh%edge_mats(i) == target_id) then
-            n1 = mesh%edges(i,1); n2 = mesh%edges(i,2)
-            L = sqrt(sum((mesh%nodes(n1,:) - mesh%nodes(n2,:))**2))
-            detJ1D = L * 0.5_dp
-
+            ! Load nodes for current edge
             do j = 1, npe
                 edge_nodes(j) = mesh%edges(i, j) - 1
             end do
 
-            do j = 1, npe
+            vals = 0.0_dp
+            do gp = 1, QuadBound%NoPoints
+                dx_dxi = 0.0_dp
+                dy_dxi = 0.0_dp
+                
+                ! Geometric mapping (1D Jacobian)
                 do k = 1, npe
-                    vals((j-1)*npe + k) = local_M(edge_map(j), edge_map(k)) * detJ1D * beta
+                    node_id = mesh%edges(i, k)
+                    if (node_id > 0) then
+                        dx_dxi = dx_dxi + mesh%nodes(node_id, 1) * FE%dN_B(gp, k)
+                        dy_dxi = dy_dxi + mesh%nodes(node_id, 2) * FE%dN_B(gp, k)
+                    end if
+                end do
+                detJ1D = sqrt(dx_dxi**2 + dy_dxi**2)
+
+                ! Integration of (N_i * N_j)
+                do j = 1, npe
+                    do k = 1, npe
+                        vals((j-1)*npe + k) = vals((j-1)*npe + k) + &
+                            FE%N_B(gp, j) * FE%N_B(gp, k) * &
+                            detJ1D * QuadBound%W(gp) * beta
+                    end do
                 end do
             end do
             
-            call MatSetValues(A, npe_p, edge_nodes, npe_p, edge_nodes, vals, ADD_VALUES, ierr)
+            call MatSetValues(A, npe, edge_nodes, npe, edge_nodes, vals, ADD_VALUES, ierr)
         end if
     end do
 
-    deallocate(edge_map, local_M, edge_nodes, vals)
+    deallocate(edge_nodes, vals)
 end subroutine
 
 subroutine PCG_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
@@ -161,54 +155,53 @@ subroutine PCG_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
     real(dp),           intent(in)    :: alpha
     type(t_mat),        intent(inout) :: A
     
-    integer  :: i, j, k, gp, n1, n2, npe
-    integer  :: node_i, node_j
-    real(dp) :: L, beta, detJ1D, val
+    integer  :: i, j, k, gp, npe, node_id, node_i, node_j
+    real(dp) :: beta, detJ1D, val, dx_dxi, dy_dxi
     real(dp), allocatable :: local_M(:,:)
-    integer,  allocatable :: edge_map(:)
 
     beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
     npe = FE%order + 1 
     
-    allocate(local_M(npe, npe), edge_map(npe))
-
-    local_M = 0.0_dp
-    do j = 1, npe
-        do k = 1, npe
-            do gp = 1, QuadBound%NoPoints
-                local_M(j, k) = local_M(j, k) + FE%N_B(gp, j) * FE%N_B(gp, k) * QuadBound%W(gp)
-            end do
-        end do
-    end do
-
-    edge_map(1) = 1
-    if (npe > 1) edge_map(2) = npe
-    if (npe > 2) then
-        do j = 3, npe
-            edge_map(j) = j - 1
-        end do
-    end if
+    allocate(local_M(npe, npe))
 
     do i = 1, mesh%n_edges
         if (mesh%edge_mats(i) == target_id) then
-            n1 = mesh%edges(i,1); n2 = mesh%edges(i,2)
-            L = sqrt(sum((mesh%nodes(n1,:) - mesh%nodes(n2,:))**2))
-            detJ1D = L * 0.5_dp
-
+            local_M = 0.0_dp
+            do gp = 1, QuadBound%NoPoints
+                dx_dxi = 0.0_dp
+                dy_dxi = 0.0_dp
+                do k = 1, npe
+                    node_id = mesh%edges(i, k)
+                    if (node_id > 0) then
+                        dx_dxi = dx_dxi + mesh%nodes(node_id, 1) * FE%dN_B(gp, k)
+                        dy_dxi = dy_dxi + mesh%nodes(node_id, 2) * FE%dN_B(gp, k)
+                    end if
+                end do
+                detJ1D = sqrt(dx_dxi**2 + dy_dxi**2)
+                
+                do j = 1, npe
+                    do k = 1, npe
+                        local_M(j, k) = local_M(j, k) + &
+                            FE%N_B(gp, j) * FE%N_B(gp, k) * &
+                            detJ1D * QuadBound%W(gp) * beta
+                    end do
+                end do
+            end do
+            
             do j = 1, npe
                 node_i = mesh%edges(i, j)
                 if (node_i <= 0) cycle
                 do k = 1, npe
                     node_j = mesh%edges(i, k)
                     if (node_j <= 0) cycle
-                    val = local_M(edge_map(j), edge_map(k)) * detJ1D * beta
+                    val = local_M(j, k)
                     call pcg_add_value(A, node_i, node_j, val)
                 end do
             end do
         end if
     end do
 
-    deallocate(local_M, edge_map)
+    deallocate(local_M)
 end subroutine
 
 subroutine pcg_add_value(A, row, col_idx, val)

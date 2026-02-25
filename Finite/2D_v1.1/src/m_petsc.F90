@@ -19,7 +19,7 @@ module m_petsc
 
 contains
 
-subroutine setup_petsc_ksp(ksp_solver, A_mat, ksp_choice, pc_choice)
+subroutine SetupKSP_PETSc(ksp_solver, A_mat, ksp_choice, pc_choice)
     KSP, intent(inout)      :: ksp_solver
     Mat, intent(inout)      :: A_mat
     integer, intent(in)     :: ksp_choice, pc_choice
@@ -56,9 +56,9 @@ subroutine setup_petsc_ksp(ksp_solver, A_mat, ksp_choice, pc_choice)
     end select
 
     PetscCall(KSPSetFromOptions(ksp_solver, ierr))
-end subroutine setup_petsc_ksp
+end subroutine SetupKSP_PETSc
 
-subroutine assemble_petsc_matrix(MAT_DATA, A_MAT, mesh, FE, Quad, NGRP, MATIDS)
+subroutine ASSEMBLEDiffusionMAT_PETSc(MAT_DATA, A_MAT, mesh, FE, Quad, NGRP, MATIDS)
     type(t_material),   intent(in)  :: MAT_DATA(:)
     type(t_mesh),       intent(in)  :: mesh
     type(t_finite),     intent(in)  :: FE
@@ -125,9 +125,10 @@ subroutine assemble_petsc_matrix(MAT_DATA, A_MAT, mesh, FE, Quad, NGRP, MATIDS)
         PetscCall(MatAssemblyEnd(A_MAT(g), MAT_FINAL_ASSEMBLY, ierr))
     end do
     deallocate(nnz)
-end subroutine assemble_petsc_matrix
+    write(*,*) "        >>> Diffusion Matrix Assembly Complete   ...        Complete"
+end subroutine ASSEMBLEDiffusionMAT_PETSc
 
-subroutine assemble_source_matrices_petsc(MAT_F, MAT_S, FixedSrc, mesh, FE, Quad, mats, n_groups, is_adjoint)
+subroutine ASSEMBLEMultigroupMAT_PETSc(MAT_F, MAT_S, FixedSrc, mesh, FE, Quad, mats, n_groups, is_adjoint)
     Mat, allocatable, intent(out) :: MAT_F(:,:), MAT_S(:,:)
     Vec, allocatable, intent(out) :: FixedSrc(:)
     type(t_mesh), intent(in)      :: mesh
@@ -232,9 +233,59 @@ subroutine assemble_source_matrices_petsc(MAT_F, MAT_S, FixedSrc, mesh, FE, Quad
             call MatAssemblyEnd(MAT_S(g_to, g_from), MAT_FINAL_ASSEMBLY, ierr)
         end do
     end do
-end subroutine assemble_source_matrices_petsc
+    write(*,*) "        >>> Fission & Scattering Matrix Assembly ...        Complete"
+end subroutine ASSEMBLEMultigroupMAT_PETSc
 
-subroutine assemble_multigroup_source_petsc(B, MAT_F, MAT_S, FixedSrc, X_VEC, X_OLD, &
+subroutine ASSEMBLEProdVEC_PETSc(PROD_VEC, mesh, FE, Quad, mats, n_groups, is_adjoint)
+    Vec, allocatable, intent(out) :: PROD_VEC(:)
+    type(t_mesh), intent(in)      :: mesh
+    type(t_finite), intent(in)    :: FE
+    type(t_quadrature), intent(in):: Quad
+    type(t_material), intent(in)  :: mats(:)
+    integer, intent(in)           :: n_groups
+    logical, intent(in)           :: is_adjoint
+
+    integer :: ee, g, i, q, mat_id, row, ierr
+    real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV
+    real(dp) :: val_p
+
+    allocate(PROD_VEC(n_groups))
+
+    do g = 1, n_groups
+        call VecCreate(PETSC_COMM_WORLD, PROD_VEC(g), ierr)
+        call VecSetSizes(PROD_VEC(g), PETSC_DECIDE, mesh%n_nodes, ierr)
+        call VecSetFromOptions(PROD_VEC(g), ierr)
+        call VecSet(PROD_VEC(g), 0.0_dp, ierr)
+    end do
+
+    do ee = 1, mesh%n_elems
+        mat_id = mesh%mats(ee)
+        do i = 1, FE%n_basis
+            elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
+        end do
+        
+        do q = 1, Quad%NoPoints
+            call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
+            dV = detJ * Quad%W(q)
+            
+            do g = 1, n_groups
+                do i = 1, FE%n_basis
+                    row = mesh%elems(ee, i) - 1
+                    val_p = merge(mats(mat_id)%NuSigF(g),mats(mat_id)%Chi(g), .not. is_adjoint) * FE%N(q,i) * dV
+                    call VecSetValue(PROD_VEC(g), row, val_p, ADD_VALUES, ierr)
+                end do
+            end do
+        end do
+    end do
+
+    do g = 1, n_groups
+        call VecAssemblyBegin(PROD_VEC(g), ierr)
+        call VecAssemblyEnd(PROD_VEC(g), ierr)
+    end do
+    write(*,*) "        >>> Production Vector Assembly Complete  ...        Complete"
+end subroutine ASSEMBLEProdVEC_PETSc
+
+subroutine EVALMultigroup_PETSc(B, MAT_F, MAT_S, FixedSrc, X_VEC, X_OLD, &
                                             n_groups, k_eff, group_idx, is_eigen)
     Vec, intent(inout) :: B
     Mat, intent(in)    :: MAT_F(:,:), MAT_S(:,:)
@@ -267,62 +318,22 @@ subroutine assemble_multigroup_source_petsc(B, MAT_F, MAT_S, FixedSrc, X_VEC, X_
     end do
 
     call VecDestroy(temp_vec, ierr)
-end subroutine
+end subroutine EVALMultigroup_PETSc
 
-subroutine calculate_total_production_petsc(total_prod, X_VEC, mesh, FE, Quad, materials, n_groups)
-    real(dp), intent(out)          :: total_prod
-    Vec, intent(in)                 :: X_VEC(:)
-    type(t_mesh), intent(in)        :: mesh
-    type(t_finite), intent(in)      :: FE
-    type(t_quadrature), intent(in)  :: Quad
-    type(t_material), intent(in)    :: materials(:)
-    integer, intent(in)             :: n_groups
-
-    integer :: ee, g, q, i, mat_id, ierr
-    real(dp) :: detJ, dV, local_prod
-    real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis)
-    real(dp) :: local_phi_vals(FE%n_basis)
-    integer  :: local_node_indices(FE%n_basis)
-
-    type t_ptr_holder
-        PetscScalar, pointer :: p(:)
-    end type
-    type(t_ptr_holder), allocatable :: x_vec_ptrs(:)
-
+subroutine EVALProd_PETSc(total_prod, X_VEC, PROD_VEC, n_groups)
+    real(dp), intent(out) :: total_prod
+    Vec, intent(in)      :: X_VEC(:)   
+    Vec, intent(in)      :: PROD_VEC(:)
+    integer, intent(in)  :: n_groups
+    
+    integer :: g, ierr
+    PetscScalar :: group_dot
+    
     total_prod = 0.0_dp
-
-    allocate(x_vec_ptrs(n_groups))
     do g = 1, n_groups
-        call VecGetArrayRead(X_VEC(g), x_vec_ptrs(g)%p, ierr)
+        call VecDot(PROD_VEC(g), X_VEC(g), group_dot, ierr)
+        total_prod = total_prod + real(group_dot, dp)
     end do
-
-    do ee = 1, mesh%n_elems
-        mat_id = mesh%mats(ee)
-        local_node_indices = mesh%elems(ee, :)
-
-        do i = 1, FE%n_basis
-            elem_coords(i, :) = mesh%nodes(local_node_indices(i), :)
-        end do
-
-        do q = 1, Quad%NoPoints
-            call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
-            dV = abs(detJ) * Quad%W(q)
-
-            local_prod = 0.0_dp
-            do g = 1, n_groups
-                local_phi_vals = real(x_vec_ptrs(g)%p(local_node_indices), dp)
-                local_prod = local_prod + materials(mat_id)%NuSigF(g) * &
-                             dot_product(FE%N(q, :), local_phi_vals)
-            end do
-            total_prod = total_prod + local_prod * dV
-        end do
-    end do
-
-    do g = 1, n_groups
-        call VecRestoreArrayRead(X_VEC(g), x_vec_ptrs(g)%p, ierr)
-    end do
-    deallocate(x_vec_ptrs)
-
-end subroutine calculate_total_production_petsc
+end subroutine EVALProd_PETSc
 
 end module m_petsc

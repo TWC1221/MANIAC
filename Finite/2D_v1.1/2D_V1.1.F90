@@ -20,7 +20,7 @@ program fem2d_main
     Mat, allocatable        :: A_MAT(:)    
     Mat, allocatable        :: MAT_F_PETSC(:,:), MAT_S_PETSC(:,:)
     Vec, allocatable        :: B_VEC(:), X_VEC(:), X_PRIME_VEC(:)    
-    Vec, allocatable        :: FixedSrc_PETSC(:)
+    Vec, allocatable        :: FixedSrc_PETSC(:), PROD_VEC(:)
     KSP, allocatable        :: ksp_solvers(:)
     PetscErrorCode          :: ierr
 
@@ -29,20 +29,20 @@ program fem2d_main
     type(t_vec), allocatable :: B_PCG(:), X_PCG(:), X_PRIME_PCG(:), FixedSrc_PCG(:)
 
     type(t_mesh)            :: mesh
-    type(t_bc_config)       :: bc_config(2)
+    type(t_bc_config)       :: bc_config(4)
     type(t_quadrature)      :: Quad, QuadBound
     type(t_finite)          :: FE
     type(t_material), allocatable :: materials(:)
     
     integer                 :: n_groups, i, k, outer_iter
-    real(dp)                :: max_phi_change, group_diff
+    real(dp)                :: max_phi_change, group_diff, t1, t2, t3
     integer                 :: solver_choice, preconditioner_choice
     integer                 :: max_outer_iter, max_CG_iter
     logical                 :: is_eigenvalue_problem, is_adjoint
     real(dp)                :: k_eff, k_eff_prime, total_production
-    character(len=26)               :: InputMesh
+    character(len=32)       :: InputMesh
 
-    InputMesh = "../input/C5G7vol_2_1_f.vtk"
+    InputMesh = "../input/C5G7vol_1_2_f.vtk"
     is_eigenvalue_problem   = .true.
     is_adjoint              = .false.
     n_groups               = 7
@@ -52,6 +52,8 @@ program fem2d_main
     max_outer_iter         = 500          
     max_CG_iter            = 100000          
 
+    call cpu_time(t1)
+
     call parse_GMSH(InputMesh, mesh, write_files = .true.)
     FE%n_basis = mesh%nloc
     FE%order   = nint(sqrt(real(FE%n_basis, dp))) - 1
@@ -59,13 +61,13 @@ program fem2d_main
     call Get1DLineQuad(FE%order + 1, QuadBound)
     call QuadrilateralQuadrature(Quad, FE%order + 1)
 
-    call InitialiseFiniteElements(FE, Quad, QuadBound, write_nodal_map = .false.)
-    call InitialiseMaterials(materials, mesh, n_groups, "../MATS.txt", printout = .false.)
+    call InitialiseFiniteElements(FE, Quad, QuadBound, write_nodal_map = .true.)
+    call InitialiseMaterials(materials, mesh, n_groups, "../MATS.txt", printout = .true.)
 
     call InitialiseBoundaries(bc_config(1), 101, BC_VACUUM, 0.0_dp)
-    call InitialiseBoundaries(bc_config(2), 102, BC_REFLECTIVE, 0.0_dp) 
-    ! call InitialiseBoundaries(bc_config(3), 103, BC_REFLECTIVE, 0.0_dp)
-    ! call InitialiseBoundaries(bc_config(4), 104, BC_REFLECTIVE, 0.0_dp) 
+    call InitialiseBoundaries(bc_config(2), 102, BC_VACUUM, 0.0_dp) 
+    call InitialiseBoundaries(bc_config(1), 103, BC_REFLECTIVE, 0.0_dp)
+    call InitialiseBoundaries(bc_config(2), 104, BC_REFLECTIVE, 0.0_dp) 
 
     if (solver_choice /= SOLVER_PCG) then
         call PetscInitialize(PETSC_NULL_CHARACTER, ierr)
@@ -81,9 +83,10 @@ program fem2d_main
             call KSPCreate(PETSC_COMM_WORLD, ksp_solvers(i), ierr)
         end do
          write(*,*) ">>> Assembling Global Matrices ..."
-        call assemble_petsc_matrix(materials, A_MAT, mesh, FE, Quad, n_groups, mesh%mats)
-        call assemble_source_matrices_petsc(MAT_F_PETSC, MAT_S_PETSC, FixedSrc_PETSC, mesh, FE, Quad, materials, n_groups, is_adjoint)
-    else
+        call ASSEMBLEDiffusionMAT_PETSc(materials, A_MAT, mesh, FE, Quad, n_groups, mesh%mats)
+        call ASSEMBLEMultigroupMAT_PETSc(MAT_F_PETSC, MAT_S_PETSC, FixedSrc_PETSC, mesh, FE, Quad, materials, n_groups, is_adjoint)
+        call ASSEMBLEProdVEC_PETSc(PROD_VEC, mesh, FE, Quad, materials, n_groups, is_adjoint)
+    else 
         allocate(A_PCG(n_groups), B_PCG(n_groups), X_PCG(n_groups), X_PRIME_PCG(n_groups))
         do i = 1, n_groups
             call PCG_VEC_INIT(mesh%n_nodes, X_PCG(i))
@@ -107,9 +110,11 @@ program fem2d_main
         end do
 
         if (solver_choice /= SOLVER_PCG) then
-            call setup_petsc_ksp(ksp_solvers(i), A_MAT(i), solver_choice, preconditioner_choice)
+            call SetupKSP_PETSc(ksp_solvers(i), A_MAT(i), solver_choice, preconditioner_choice)
         end if
     end do
+
+    call cpu_time(t2)
 
     write(*,*) merge(">>> Starting Power Iteration ...", &
                      ">>> Solving for Neutron Flux ...", is_eigenvalue_problem)
@@ -121,8 +126,7 @@ program fem2d_main
 
         do i = 1, n_groups
             if (solver_choice /= SOLVER_PCG) then
-                call VecCopy(X_VEC(i), X_PRIME_VEC(i), ierr)
-                call assemble_multigroup_source_petsc(B_VEC(i), MAT_F_PETSC, MAT_S_PETSC, FixedSrc_PETSC, &
+                call EVALMultigroup_PETSc(B_VEC(i), MAT_F_PETSC, MAT_S_PETSC, FixedSrc_PETSC, &
                                                       X_VEC, X_PRIME_VEC, n_groups, k_eff_prime, i, is_eigenvalue_problem)
                 call KSPSolve(ksp_solvers(i), B_VEC(i), X_VEC(i), ierr)                
 
@@ -130,7 +134,6 @@ program fem2d_main
                 call VecNorm(B_VEC(i), NORM_INFINITY, group_diff, ierr)
                 max_phi_change = max(max_phi_change, group_diff)
             else
-                X_PRIME_PCG(i)%vec = X_PCG(i)%vec
                 call assemble_multigroup_source_pcg(B_PCG(i), MAT_F_PCG, MAT_S_PCG, FixedSrc_PCG, &
                                                     X_PCG, X_PRIME_PCG, n_groups, k_eff_prime, i, is_eigenvalue_problem)
                 call CGSolve(A_PCG(i), X_PCG(i), B_PCG(i), preconditioner_choice, max_CG_iter)
@@ -141,14 +144,16 @@ program fem2d_main
 
         if (is_eigenvalue_problem) then
             if (solver_choice /= SOLVER_PCG) then
-                call calculate_total_production_petsc(total_production, X_VEC, mesh, FE, Quad, materials, n_groups)
+                call EVALProd_PETSc(total_production, X_VEC, PROD_VEC, n_groups)
                 do i = 1, n_groups
                     call VecScale(X_VEC(i), 1.0_dp / total_production, ierr)
+                    call VecCopy(X_VEC(i), X_PRIME_VEC(i), ierr)
                 end do
             else
                 call calculate_total_production_pcg(total_production, X_PCG, mesh, FE, Quad, materials, n_groups)
                 do i = 1, n_groups
                     X_PCG(i)%vec = X_PCG(i)%vec / total_production
+                    X_PRIME_PCG(i)%vec = X_PCG(i)%vec
                 end do
             end if
 
@@ -162,13 +167,17 @@ program fem2d_main
         end if 
     end do
 
+    call cpu_time(t3)
+
+    write(*,*) t1, t2, t3
+
     if (solver_choice /= SOLVER_PCG) then
-        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 8, .false.)
+        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 5, .false.)
         call PetscFinalize(ierr)
     else
-        call export_vtk_pcg("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_PCG, n_groups, 8, .false.)
+        call export_vtk_pcg("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_PCG, n_groups, 3, .false.)
     end if
-
+    
     call system("gprof exe > analysis.txt && python3 -m gprof2dot -f prof analysis.txt | dot -Tsvg -o ../output/profile_map.svg") 
 
 end program fem2d_main
