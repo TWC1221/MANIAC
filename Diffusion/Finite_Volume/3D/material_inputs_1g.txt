@@ -1,0 +1,14 @@
+# Number of energy groups
+1
+
+# Chi vector
+1.0
+
+# Sigma_a vector
+0.015
+
+# Nu Sigma_f vector
+0.02
+
+# Sigma_s matrix (GxG)
+0.200

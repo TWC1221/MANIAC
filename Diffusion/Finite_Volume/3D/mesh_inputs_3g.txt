@@ -1,0 +1,6 @@
+# Size of problem: x, y, z
+20.0 20.0 20.0
+
+# Discretisation (number of nodes): nx, ny, nz 
+40 40 40
+

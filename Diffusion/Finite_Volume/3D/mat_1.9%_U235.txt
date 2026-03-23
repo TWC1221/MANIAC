@@ -1,0 +1,19 @@
+#EVAL
+# Number of energy groups
+2
+
+# Chi vector
+1.0 0.0
+
+# Sigma_a vector
+0.0027844 0.071921
+
+# Nu Sigma_f vector
+0.0 0.082837
+
+# Sigma_s matrix (GxG)
+0.242856 0.0300016
+0.000000 1.461562
+
+#EVAL
+0.84290 0.85490 0.96881 0.86974 6.6769

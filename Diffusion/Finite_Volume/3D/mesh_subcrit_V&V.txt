@@ -1,0 +1,13 @@
+# Size of problem: x, y, z
+40.0 1.0 1.0
+
+# Discretisation (number of nodes): nx, ny, nz 
+1000 2 2
+
+    ! set_bc_dirichlet(BCs, face_ID, value), set_bc_neumann(BCs, face_ID, value), set_bc_vacuum(BCs, face_ID), set_bc_albedo(BCs, face_ID, alpha), periodic at call ASSEMBLY
+    call set_bc_dirichlet(BCs, FACE_XMIN, 0.0d0)
+    call set_bc_dirichlet(BCs, FACE_XMAX, 0.0d0)
+    call set_bc_neumann(BCs, FACE_YMIN, 0.0d0)
+    call set_bc_neumann(BCs, FACE_YMAX, 0.0d0)
+    call set_bc_neumann(BCs, FACE_ZMIN, 0.0d0)
+    call set_bc_neumann(BCs, FACE_ZMAX, 0.0d0)      

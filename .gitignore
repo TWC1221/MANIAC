@@ -127,3 +127,27 @@ build/CMakeFiles/src.dir/src/m_2D_NDE/m_PCG_solver.f90.o.provides.build
 build/multigroup_multidimensional.mod
 build/CMakeFiles/src.dir/multigroup_multidimensional.mod.stamp
 SN_phi.vtk
+# Ignore all build folders and their contents
+**/build/
+**/CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+exe
+*.a
+*.o
+
+# Ignore Fortran compiled modules
+*.mod
+*.mod.stamp
+
+# Ignore large simulation outputs
+**/output/
+*.vtk
+*.dat
+*.svg
+gmon.out
+
+# Ignore system/IDE specific files
+.cmake/
+.vscode/
