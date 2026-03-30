@@ -35,10 +35,10 @@ program fem3d_main
     is_adjoint             = .false.
     is_SEM                 = .true.
     printout               = .true.
-    FE%order               = 2
-    QuadSn%order           = 8
+    FE%order               = 1
+    QuadSn%order           = 2
 
-    InputMesh              = "../input/trial_mesh.vtk"
+    InputMesh              = "../input/C5G7_IEA_UHFz.vtk"
     ref_ID                 = [103] !REFLECTIVE BOUNDARY ID
     n_groups               = 7
 

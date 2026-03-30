@@ -8,28 +8,6 @@ module m_GMSH
 
 contains
 
-    pure function derive_case_nametag(filename) result(tag)
-        character(len=*), intent(in) :: filename
-        character(len=:), allocatable :: tag
-        integer :: pos, dot_pos
-
-        ! 1. Strip the path (keep only the filename)
-        pos = index(filename, '/', back=.true.)
-        if (pos == 0) pos = index(filename, '\', back=.true.)
-
-        if (pos > 0) then
-            tag = filename(pos+1:)
-        else
-            tag = filename
-        end if
-
-        ! 2. Strip the .vtk extension if it exists
-        dot_pos = index(tag, '.vtk', back=.true.)
-        if (dot_pos > 0) then
-            tag = tag(:dot_pos-1)
-        end if
-    end function derive_case_nametag
-
     subroutine ParseMesh(filename, FE, mesh, is_SEM)
         character(len=*), intent(in)    :: filename
         logical,        intent(in)      :: is_SEM
@@ -687,5 +665,25 @@ contains
         end do
         close(unit)
     end subroutine write_pins
+
+    pure function derive_case_nametag(filename) result(tag)
+        character(len=*), intent(in) :: filename
+        character(len=:), allocatable :: tag
+        integer :: pos, dot_pos
+
+        pos = index(filename, '/', back=.true.)
+        if (pos == 0) pos = index(filename, '\', back=.true.)
+
+        if (pos > 0) then
+            tag = filename(pos+1:)
+        else
+            tag = filename
+        end if
+
+        dot_pos = index(tag, '.vtk', back=.true.)
+        if (dot_pos > 0) then
+            tag = tag(:dot_pos-1)
+        end if
+    end function derive_case_nametag
 
 end module m_GMSH
