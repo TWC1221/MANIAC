@@ -29,7 +29,7 @@ contains
         if (present(printout)) log_active = printout
         if (.not. log_active) return
 
-        ! --- Initialization ---
+        ! --- Initialization --- 
         n_nodes           = size(nodes, 2)
         g_min_jac         = huge(1.0_dp)
         g_max_skew        = 0.0_dp
@@ -49,8 +49,9 @@ contains
         do el = 1, num_elements
             vtk_type = elements_vtk_type(el)
             
-            if (is_degenerate(elements_nodes(:, el), vtk_type)) then
+            if (is_degenerate(elements_nodes(:, el), vtk_type, n_nodes)) then
                 degenerate_count = degenerate_count + 1
+                cycle
             end if
 
             select case (vtk_type)
@@ -126,15 +127,25 @@ contains
 
     end subroutine check_mesh_quality
 
-    function is_degenerate(ids, vtk_type) result(failed)
-        integer, intent(in) :: ids(:), vtk_type
+    function is_degenerate(ids, vtk_type, max_nodes) result(failed)
+        integer, intent(in) :: ids(:), vtk_type, max_nodes
         logical :: failed
         integer :: i, j, n
         failed = .false.
         n = merge(8, 4, vtk_type == 12)
+
+        ! 1. Range check: Ensure node indices are valid for Fortran (1-based)
+        do i = 1, n
+            if (ids(i) <= 0 .or. ids(i) > max_nodes) then
+                failed = .true.
+                return
+            end if
+        end do
+
+        ! 2. Topology check: Ensure no duplicate nodes within a single element
         do i = 1, n-1
             do j = i+1, n
-                if (ids(i) == ids(j) .and. ids(i) /= 0) then
+                if (ids(i) == ids(j)) then
                     failed = .true.
                     return
                 end if

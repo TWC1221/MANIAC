@@ -33,17 +33,17 @@ program fem2d_main
     ! --- Configuration ---
     is_eigenvalue_problem  = .true.
     is_adjoint             = .false.
-    is_SEM                 = .false.
+    is_SEM                 = .true.
 
-    InputMesh              = "../input/C5G7vol_4.vtk"
+    InputMesh              = "../input/C5G7vol_1.vtk"
     ref_ID                 = [103, 104] !B=101,R=102,T=103,L=104
     n_groups               = 7
 
     FE%order               = 1
-    QuadSn%order           = 6
+    QuadSn%order           = 8
 
     max_outer_iter          = 600
-    tol                    = 1e-5
+    tol                    = 1e-6
     
     t1 = omp_get_wtime()
 
@@ -56,7 +56,7 @@ program fem2d_main
     call InitialiseTransport(mesh, FE, Quad2D, Quad1D, QuadSn, materials, n_groups)
 
     allocate(angular_flux(mesh%n_elems * FE%n_basis, QuadSn%n_angles, n_groups), scalar_flux(mesh%n_elems * FE%n_basis, n_groups), scalar_flux_old(mesh%n_elems * FE%n_basis, n_groups), total_src(mesh%n_elems * FE%n_basis, n_groups))
-    k_eff = 1.0_dp; angular_flux = 0.0; scalar_flux = 0.00001
+    k_eff = 1.0_dp; angular_flux = 0.0; scalar_flux = 0.001
 
     do outer_iter = 1, max_outer_iter
 

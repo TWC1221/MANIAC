@@ -31,7 +31,7 @@ program fem3d_main
     type(t_vec), allocatable :: B_PCG(:), X_PCG(:), X_PRIME_PCG(:), FixedSrc_PCG(:)
 
     type(t_mesh)            :: mesh
-    type(t_bc_config)       :: bc_config(6)
+    type(t_bc_config)       :: bc_config(2)
     type(t_quadrature)      :: Quad, QuadBound
     type(t_finite)          :: FE
     type(t_material), allocatable :: materials(:)
@@ -45,7 +45,7 @@ program fem3d_main
     character(len=32)       :: InputMesh
     logical                 :: verbose
 
-    InputMesh = "../input/C5G7v9.vtk"
+    InputMesh = "../input/C5G7_IEA_HFz.vtk"
     is_eigenvalue_problem   = .true.
     is_adjoint              = .false.
     n_groups               = 7
@@ -86,12 +86,8 @@ program fem3d_main
     call timer_stop('Material Init')
 
     call timer_start('Boundary Init')
-    call InitialiseBoundaries(bc_config(1), 101, BC_REFLECTIVE, 0.0_dp) !XMIN
-    call InitialiseBoundaries(bc_config(2), 102, BC_VACUUM, 0.0_dp) !XMAX
-    call InitialiseBoundaries(bc_config(3), 103, BC_REFLECTIVE, 0.0_dp) !YMIN
-    call InitialiseBoundaries(bc_config(4), 104, BC_VACUUM, 0.0_dp) !YMAX
-    call InitialiseBoundaries(bc_config(5), 105, BC_REFLECTIVE, 0.0_dp) !ZMIN
-    call InitialiseBoundaries(bc_config(6), 106, BC_VACUUM, 0.0_dp) !ZMAX
+    call InitialiseBoundaries(bc_config(1), 103, BC_REFLECTIVE, 0.0_dp) !XMAX
+    call InitialiseBoundaries(bc_config(2), 102, BC_VACUUM, 0.0_dp) !YMIN
     call timer_stop('Boundary Init')
 
     call timer_stop('Initialization')
@@ -202,7 +198,7 @@ program fem3d_main
             k_eff = k_eff_prime * total_production
 
             if (verbose) write(*,'(A,I3,A,F12.8,A,ES12.4)') " [ SOLVER ] :: Iteration: ", outer_iter, " k-eff: ", k_eff, "  dPhi: ", max_phi_change
-            if (abs(k_eff - k_eff_prime) < 1e-5 .and. max_phi_change < 1e-5) exit
+            if (abs(k_eff - k_eff_prime) < 1e-5) exit
         else
             if (solver_choice /= SOLVER_PCG) then
                 do i = 1, n_groups
