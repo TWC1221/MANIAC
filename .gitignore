@@ -151,3 +151,7 @@ gmon.out
 # Ignore system/IDE specific files
 .cmake/
 .vscode/
+
+# Ignore MacOS System Files
+.DS_Store
+**/.DS_Store
