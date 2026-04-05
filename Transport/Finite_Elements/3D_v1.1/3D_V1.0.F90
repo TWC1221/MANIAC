@@ -33,10 +33,10 @@ program fem3d_main
     ! --- Configuration ---
     is_eigenvalue_problem  = .true.
     is_adjoint             = .false.
-    is_SEM                 = .true.
+    is_SEM                 = .false.
     printout               = .true.
-    FE%order               = 16
-    QuadSn%order           = 16
+    FE%order               = 10
+    QuadSn%order           = 2
 
     InputMesh              = "../input/trial_mesh.vtk"
     ref_ID                 = [103] !REFLECTIVE BOUNDARY ID
