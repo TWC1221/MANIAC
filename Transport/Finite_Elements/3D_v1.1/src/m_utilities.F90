@@ -136,7 +136,6 @@ end subroutine print_splash
 
         do u = 1, n_out
             write(u_list(u),*) ""
-            write(u_list(u),*) ""
 
             write(u_list(u), '(A)') HDR
             write(u_list(u), '(A)') " |                       MESH QUALITY REPORT                               |"
@@ -176,7 +175,6 @@ end subroutine print_splash
                 if (duplicate_node_count > 0) write(u_list(u), '(A, I8, T76, A)') " |         - COINCIDENT NODES:", duplicate_node_count, "|"
             end if
             write(u_list(u), '(A)') HDR
-            write(u_list(u),*) ""
         end do
         call timer_stop('CHECK - Mesh Audit')
 

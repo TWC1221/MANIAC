@@ -23,13 +23,13 @@ contains
         integer :: mm
         real(dp) :: dir_tmp(3)
 
-        call timer_start('EVAL - Connectivity')
         ! 1. Build element-to-element and element-to-boundary connectivity and normals
+        call timer_start('EVAL - Connectivity')
         call connectivity_and_normals(mesh, FE)
         call timer_stop('EVAL - Connectivity')
 
-        call timer_start('EVAL - Upwind Indices')
         ! 2. Precompute the global indices for upwind neighbors to accelerate the sweep
+        call timer_start('EVAL - Upwind Indices')
         call precompute_upwind_indices(mesh, FE)
         call timer_stop('EVAL - Upwind Indices')
 
