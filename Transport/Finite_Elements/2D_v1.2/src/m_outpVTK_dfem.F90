@@ -16,6 +16,7 @@ contains
         character(len=:), allocatable :: tag
         integer :: pos, dot_pos
 
+        ! 1. Strip the path (keep only the filename)
         pos = index(filename, '/', back=.true.)
         if (pos == 0) pos = index(filename, '\', back=.true.)
 
@@ -25,19 +26,13 @@ contains
             tag = filename
         end if
 
+        ! 2. Strip the .vtk extension if it exists
         dot_pos = index(tag, '.asmg', back=.true.)
         if (dot_pos > 0) then
             tag = tag(:dot_pos-1)
         end if
     end function derive_case_nametag
-
-    pure function int_to_str(i) result(res)
-        integer, intent(in) :: i
-        character(len=12) :: res
-        write(res, '(I0)') i
-        res = adjustl(res)
-    end function int_to_str
-
+    
     subroutine PinPowerNormalisation(mesh, FE, materials, Quad2D, n_groups, &
                                      scalar_flux, angular_flux, total_src, pin_powers, filename)
         type(t_mesh), intent(inOUT)                    :: mesh
@@ -52,9 +47,9 @@ contains
 
         integer :: ee, g, k, i, pin_cnt, idx_start, idx_end
         real(dp) :: fission_rate_total, elem_fission, factor, detJ
-        real(dp) :: el_nodes(FE%n_basis, 2)
+        real(dp) :: el_nodes(FE%n_basis, 2), el_weights(FE%n_basis)
         real(dp) :: dN_dx(FE%n_basis), dN_dy(FE%n_basis)
-        real(dp) :: u_local(n_groups)
+        real(dp) :: u_local(n_groups), basis_rational(FE%n_basis)
         real(dp) :: total_pin_power, min_pin_power, max_err
         integer :: max_pin
 
@@ -64,24 +59,27 @@ contains
         fission_rate_total = 0.0_dp
 
         do ee = 1, mesh%n_elems
+            if (any(mesh%material_ids(ee) == [1,6,7,8])) mesh%pin_ids(ee) = 0 ! Assign to ID 0 to avoid overlapping with fuel pins 1...N
             if (.not. allocated(materials(mesh%material_ids(ee))%SigF)) cycle
             if (sum(materials(mesh%material_ids(ee))%SigF) < 1.0e-20) cycle
 
-            el_nodes = mesh%nodes(mesh%elems(ee, 1:FE%n_basis), :)
+            el_nodes = mesh%nodes(mesh%elems(ee, 1:FE%n_basis), 1:2)
+            el_weights = mesh%weights(mesh%elems(ee, 1:FE%n_basis))
 
             idx_start = (ee-1)*FE%n_basis + 1
             idx_end   = ee*FE%n_basis
             
             elem_fission = 0.0_dp
             do k = 1, Quad2D%n_points
-                call GetMapping(FE, k, el_nodes, dN_dx, dN_dy, detJ)
+                call GetMapping(FE, k, el_nodes, dN_dx, dN_dy, detJ, el_weights, basis_rational)
+                if (abs(detJ) < 1.0d-15) cycle
 
                 u_local = 0.0_dp
                 do g = 1, n_groups
-                    u_local(g) = dot_product(scalar_flux(idx_start:idx_end, g), FE%basis_at_quad(k, :))
+                    u_local(g) = dot_product(scalar_flux(idx_start:idx_end, g), basis_rational)
                 end do
 
-                elem_fission = elem_fission + Quad2D%weights(k) * detJ * dot_product(materials(mesh%material_ids(ee))%SigF, u_local)
+                elem_fission = elem_fission + Quad2D%weights(k) * abs(detJ) * dot_product(materials(mesh%material_ids(ee))%SigF, u_local)
             end do
             fission_rate_total = fission_rate_total + elem_fission
             if (mesh%pin_ids(ee) > 0) pin_powers(mesh%pin_ids(ee)) = pin_powers(mesh%pin_ids(ee)) + elem_fission
@@ -144,15 +142,16 @@ contains
         ! Read entire 34x34 data block. Fortran '*' read is robust to line breaks.
         read(unit, *, iostat=ios) raw
         close(unit)
-
-        do j = 1, n
-            do i = 1, n
-                raw(i, j) = max(raw(i, j), raw(j, i))
+            do j = 1, n
+                do i = 1, n
+                    raw(i, j) = max(raw(i, j), raw(j, i))
+                    print*, "Read raw power for (i=", i, ", j=", j, "): ", raw(i, j) ! Debug print
+                end do
             end do
-        end do
 
         ! Map 2D grid to 1D pin_id using block-sequential ordering:
-        max_pin_id = 3179
+        ! Assemblies are indexed BL=1, BR=2, TL=3, TR=4
+        max_pin_id = 2312
         allocate(reference_powers(0:max_pin_id))
         reference_powers = 0.0_dp
 
@@ -163,15 +162,15 @@ contains
             do i = 1, n
                 Ax    = (i - 1) / m + 1
                 i_loc = mod(i - 1, m) + 1 
-
-                ! Map 2x2 grid to mesh assemblies 4,5 (Top) and 7,8 (Bottom)
-                assm_idx = (Ay - 1) * 3 + Ax + 3
-                pin_id   = (assm_idx - 1) * (m * m) + (j_loc - 1) * m + i_loc
                 
-                if (pin_id <= max_pin_id) reference_powers(pin_id) = raw(i, j)
+                ! Map 2x2 grid to mesh assemblies 2,3,4,5 (Sequential block ordering)
+                ! Using Ay=1 for top half results in assm_idx 2,3. Ay=2 for bottom half results in 4,5.
+                assm_idx = (Ay - 1) * 2 + Ax + 1
+                pin_id   = (assm_idx - 1) * (m * m) + (j_loc - 1) * m + i_loc + 867
+                
+                if (pin_id <= max_pin_id) reference_powers(pin_id) = raw(j, i)
 
-                print*, "i=", i, " j=", j, " -> Ax=", Ax, " Ay=", Ay, " i_loc=", i_loc, " j_loc=", j_loc, &
-                         " assm_idx=", assm_idx, " pin_id=", pin_id, " power=", raw(i,j)
+                PRINT*  , "Pin ID:", pin_id, " (i=", i, ", j=", j, ") -> Assm:", assm_idx, " (i_loc=", i_loc, ", j_loc=", j_loc, ") with power ", raw(j,i)
             end do
         end do
         deallocate(raw)
@@ -193,7 +192,7 @@ contains
         integer :: gid, cid, basep, p
         integer :: refine_level
 
-        real(dp), allocatable :: xi_grid(:), eta_grid(:)
+        real(dp), allocatable :: xi_grid(:), eta_grid(:), weights_local(:)
         real(dp), allocatable :: N_eval(:), reordered_coords(:,:)
         real(dp), allocatable :: Xp(:,:), Up(:,:)
         real(dp)              :: p_pow
@@ -215,6 +214,7 @@ contains
 
         allocate(xi_grid(refine_level), eta_grid(refine_level))
         allocate(N_eval(nbasis), reordered_coords(nbasis, 2))
+        allocate(weights_local(nbasis))
         allocate(Xp(n_sub_nodes, 3), Up(n_sub_nodes, NGRP))
         allocate(Cells(n_sub_elems, 4))
 
@@ -230,14 +230,15 @@ contains
             basep = (ee-1)*nbasis
             ! Get actual physical coordinates of the high-order nodes
             do i = 1, nbasis
-                reordered_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
+                reordered_coords(i, :) = mesh%nodes(mesh%elems(ee, i), 1:2)
             end do
+            weights_local = mesh%weights(mesh%elems(ee, 1:nbasis))
             
             ! Loop through eta (j) then xi (i) to match standard VTK ordering
             do j = 1, refine_level
                 do i = 1, refine_level
                     gid = gid + 1
-                    call GetArbitraryBasis(FE, xi_grid(i), eta_grid(j), N_eval)
+                    call GetArbitraryBasis(FE, xi_grid(i), eta_grid(j), N_eval, weights_local)
                     
                     Xp(gid,1) = dot_product(N_eval, reordered_coords(:, 1))
                     Xp(gid,2) = dot_product(N_eval, reordered_coords(:, 2))
@@ -250,6 +251,7 @@ contains
             end do
         end do
 
+        ! 2. Generate sub-quad connectivity (Linear quads for visualization)
         cid = 0
         do ee = 1, mesh%n_elems
             ! Start of this element's points in the global Xp array
@@ -269,6 +271,7 @@ contains
             end do
         end do
 
+        ! 4. File Writing
         adj = ""
         sem = "_f"
         slash_idx = index(filename, '/', back=.true.)
@@ -305,7 +308,7 @@ contains
         do i = 1, n_sub_elems
             write(unit_v, '(I2)') 9 ! VTK_QUAD
         end do
-
+        
         ! Material & Pin IDs
         write(unit_v, '(A, I10)') "CELL_DATA ", n_sub_elems
         write(unit_v, '(A)') "SCALARS Material_ID int 1"
@@ -315,7 +318,7 @@ contains
                 write(unit_v, '(I10)') mesh%material_ids(ee)
             end do
         end do
-              
+        
         write(unit_v, '(A)') "SCALARS Pins_ID int 1"
         write(unit_v, '(A)') "LOOKUP_TABLE default"
         do ee = 1, mesh%n_elems
@@ -323,7 +326,7 @@ contains
                 write(unit_v, '(I10)') mesh%pin_ids(ee)
             end do
         end do
-
+        
         if (present(PinPowers)) then
             write(unit_v, '(A)') "SCALARS Relative_Pin_Power double 1"
             write(unit_v, '(A)') "LOOKUP_TABLE default"

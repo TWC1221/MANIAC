@@ -1,6 +1,5 @@
 module m_asmg
     use m_constants
-    use m_outpVTK_dfem
     use m_types
     implicit none
     private
@@ -11,28 +10,37 @@ contains
     subroutine read_asmg_mesh(filepath, mesh)
         character(len=*), intent(in) :: filepath
         type(t_mesh), intent(inout) :: mesh
-
-        integer :: unit, iostatus, i, j, npe, pos
-        character(len=1024) :: line
-        integer :: v(4), v2(2)
-        real(dp), allocatable :: temp_nodes3(:,:)
-        integer :: p_count, patch_count, edge_count
         
-        ! --- Pass 1: Count Elements and Nodes ---
+        integer :: unit, iostatus, i, j, k, dummy_int
+        real(dp) :: dummy_coord
+        character(len=1024) :: line
+        integer :: patch_count, edge_count, p_count
+        integer :: max_cp, max_knots, pos
+
         open(newunit=unit, file=filepath, status='old', action='read')
-        patch_count = 0
-        edge_count = 0
-        p_count = 0
+        patch_count = 0; edge_count = 0; p_count = 0
+        max_cp = 4; max_knots = 6
+        
         do
             read(unit, '(A)', iostat=iostatus) line
             if (iostatus /= 0) exit
             line = adjustl(line)
+            
             if (index(line, '$2D_Patch_Description_Start') > 0) then
                 patch_count = patch_count + 1
             else if (index(line, '$1D_Patch_Description_Start') > 0) then
                 edge_count = edge_count + 1
             else if (index(line, 'POINTS') == 1) then
-                read(line(index(line,' '):), *) p_count
+                read(line(7:), *) p_count
+            else if (index(line, 'control_points:') == 1) then
+                read(line(16:), *) k
+                if (k > max_cp) max_cp = k
+            else if (index(line, 'KnotVector') > 0) then
+                pos = index(line, ':')
+                if (pos > 0) then
+                    read(line(pos+1:), *) k
+                    if (k > max_knots) max_knots = k
+                end if
             end if
         end do
 
@@ -41,178 +49,172 @@ contains
         mesh%n_edges = edge_count
         mesh%dim     = 2
         mesh%n_faces_per_elem = 4
-        npe = 4 ! Quads
 
-        allocate(mesh%nodes(mesh%n_nodes, 2))
-        allocate(mesh%elems(mesh%n_elems, npe))
+        allocate(mesh%nodes(mesh%n_nodes, mesh%dim))
+        allocate(mesh%weights(mesh%n_nodes))
+        allocate(mesh%elems(mesh%n_elems, max_cp)); mesh%elems = 0
+        allocate(mesh%knot_vectors_xi(mesh%n_elems, max_knots)); mesh%knot_vectors_xi = 0.0_dp
+        allocate(mesh%knot_vectors_eta(mesh%n_elems, max_knots)); mesh%knot_vectors_eta = 0.0_dp
         allocate(mesh%material_ids(mesh%n_elems))
+        allocate(mesh%pin_ids(mesh%n_elems))
         allocate(mesh%boundary_ids(mesh%n_edges))
-        allocate(mesh%edges(mesh%n_edges, 2))
-        allocate(mesh%pin_ids(mesh%n_elems)); mesh%pin_ids = 0
-        
+        allocate(mesh%edges(mesh%n_edges, max_cp)); mesh%edges = 0
+                
         rewind(unit)
-
-        ! --- Pass 2: Parse Data ---
+    
+        j = 0 ! 2D Patch counter
+        i = 0 ! 1D Patch counter
+        
         do
             read(unit, '(A)', iostat=iostatus) line
             if (iostatus /= 0) exit
             line = adjustl(line)
 
+            ! Skip comments and empty lines at the top level
+            if (len_trim(line) == 0 .or. line(1:1) == '!') cycle
+
+            ! 1. Global Points
             if (index(line, 'POINTS') == 1) then
-                i = 1
-                do while (i <= mesh%n_nodes)
-                    read(unit, *) mesh%nodes(i, 1), mesh%nodes(i, 2)
-                    i = i + 1
+                do k = 1, mesh%n_nodes
+                    ! dummy_coord is for the Z-coordinate, which is 0 for 2D.
+                    ! mesh%weights(k) is column 4.
+                    read(unit, *) mesh%nodes(k,1), mesh%nodes(k,2), dummy_coord, mesh%weights(k)
                 end do
 
-            else if (index(line, '$$$ 1D_PATCHES_START $$$') > 0) then
-                j = 1
-                do while (j <= mesh%n_edges)
-                    read(unit, '(A)') line
-                    if (index(line, '$1D_Patch_Description_Start') > 0) then
-                        do
-                            read(unit, '(A)') line
-                            line = adjustl(line)
-                            if (index(line, 'BC:') == 1) then
-                                call skip_to_val(unit, line)
-                                read(line, *) mesh%boundary_ids(j)
-                            else if (index(line, 'control_points:') == 1) then
-                                call skip_to_val(unit, line)
-                                read(line, *) v2
-                                mesh%edges(j, 1) = v2(1) + 1
-                                mesh%edges(j, 2) = v2(2) + 1
-                            else if (index(line, '$1D_Patch_Description_End') > 0) then
-                                exit
-                            end if
-                        end do
-                        j = j + 1
-                    end if
-                end do
+            ! 2. 1D Patches (Edges)
+            else if (index(line, '$1D_Patch_Description_Start') > 0) then
+                i = i + 1
+                call parse_patch_block(unit, mesh%edges(i,:), mesh%boundary_ids(i), dummy_int, &
+                                     .false., out_knots_xi=mesh%knot_vectors_xi(i,:))
 
-            else if (index(line, '$$$ 2D_PATCHES_START $$$') > 0) then
-                j = 1
-                do while (j <= mesh%n_elems)
-                    read(unit, '(A)') line
-                    if (index(line, '$2D_Patch_Description_Start') > 0) then
-                        do
-                            read(unit, '(A)') line
-                            line = adjustl(line)
-                            if (len_trim(line) == 0 .or. line(1:1) == '!') cycle
-
-                            ! Robust same-line parsing for IDs
-                            pos = index(line, 'Material_ID:')
-                            if (pos > 0) then
-                                read(line(pos+12:), *) mesh%material_ids(j)
-                            end if
-
-                            pos = index(line, 'Pin_ID:')
-                            if (pos > 0) then
-                                read(line(pos+7:), *) mesh%pin_ids(j)
-                            end if
-
-                            if (index(line, 'control_points:') == 1) then
-                                call skip_to_val(unit, line)
-                                read(line, *) v
-                                mesh%elems(j, :) = v + 1
-                            else if (index(line, '$2D_Patch_Description_End') > 0) then
-                                exit
-                            end if
-                        end do
-                        j = j + 1
-                    end if
-                end do
+            ! 3. 2D Patches (Elements)
+            else if (index(line, '$2D_Patch_Description_Start') > 0) then
+                j = j + 1
+                call parse_patch_block(unit, mesh%elems(j,:), mesh%pin_ids(j), mesh%material_ids(j), &
+                                     .true., mesh%knot_vectors_xi(j,:), mesh%knot_vectors_eta(j,:))
             end if
         end do
+        
         close(unit)
+        
+        call write_mesh_to_files(mesh)
 
-        ! --- Writeouts for Debugging ---
-        block
-            character(len=512) :: out_dir
-            out_dir = "../output/" // derive_case_nametag(filepath)
-            call execute_command_line("mkdir -p " // trim(out_dir))
-            
-            allocate(temp_nodes3(mesh%n_nodes, 3))
-            temp_nodes3(:,1:2) = mesh%nodes
-            temp_nodes3(:,3)   = 0.0_dp
-
-            call write_nodes(temp_nodes3, out_dir)
-            call write_elements(mesh%n_elems, mesh%elems, out_dir)
-            call write_edges(mesh%n_edges, mesh%edges, mesh%boundary_ids, out_dir)
-            call write_materials(mesh%n_elems, mesh%material_ids, out_dir)
-            call write_pins(mesh%n_elems, mesh%pin_ids, out_dir)
-            
-            deallocate(temp_nodes3)
-        end block
-
-        print *, "Successfully loaded ASMG mesh with boundaries: ", trim(filepath)
+        !print*, "SUCCESS: Read", mesh%n_elems, "elements and", mesh%n_nodes, "nodes."
+        !print('(23F8.3)'), transpose(mesh%knot_vectors(1:mesh%n_elems, 1:max_knots))
+        
     end subroutine read_asmg_mesh
 
-    subroutine skip_to_val(u, line)
+    subroutine parse_patch_block(u, out_cp, out_id1, out_id2, is_2d, out_knots_xi, out_knots_eta)
         integer, intent(in) :: u
-        character(len=*), intent(out) :: line
+        integer, intent(inout) :: out_cp(:)
+        integer, intent(out)   :: out_id1, out_id2
+        logical, intent(in)    :: is_2d
+        real(dp), intent(inout), optional :: out_knots_xi(:), out_knots_eta(:)
+        
+        character(len=1024) :: l
+        integer :: ios, n_val, m, pos
+        
+        ! Initialize defaults
+        out_id1 = -1
+        out_id2 = -1
+        
         do
-            read(u, '(A)') line
-            if (len_trim(line) > 0 .and. line(1:1) /= '!') exit
-        end do
-    end subroutine skip_to_val
+            read(u, '(A)', iostat=ios) l
+            if (ios /= 0) exit
+            l = adjustl(l)
+            
+            if (index(l, '$1D_Patch_Description_End') > 0 .or. &
+                index(l, '$2D_Patch_Description_End') > 0) exit
+            
+            if (l == '' .or. l(1:1) == '!') cycle
 
-    subroutine write_nodes(nodes3, out_dir)
-        real(dp), intent(in) :: nodes3(:,:)
-        character(len=*), intent(in) :: out_dir
-        integer :: i, unit
-        open(newunit=unit, file=trim(out_dir)//"/nodes.dat", status="replace")
-        write(unit,'(A)') '# id          x                      y                      z'
-        do i = 1, size(nodes3, 1)
-            write(unit,'(I8,3ES25.15)') i, nodes3(i,:)
+            if (index(l, 'Material_ID:') > 0) then
+                pos = index(l, ':') + 1
+                read(l(pos:), *, iostat=ios) out_id2
+            else if (index(l, 'Pin_ID:') > 0) then
+                pos = index(l, ':') + 1
+                read(l(pos:), *, iostat=ios) out_id1
+            else if (index(l, 'BC:') > 0) then
+                pos = index(l, ':') + 1
+                read(l(pos:), *, iostat=ios) out_id1
+            else if (index(l, 'control_points:') > 0) then
+                pos = index(l, ':') + 1
+                read(l(pos:), *, iostat=ios) n_val
+                if (ios == 0 .and. n_val > 0) then
+                    read(u, *, iostat=ios) (out_cp(m), m=1, n_val)
+                    if (ios == 0) out_cp(1:n_val) = out_cp(1:n_val) + 1
+                end if
+            else if (index(l, 'KnotVectorXi') > 0 .and. present(out_knots_xi)) then
+                pos = index(l, ':') + 1
+                read(l(pos:), *, iostat=ios) n_val
+                if (ios == 0 .and. n_val > 0) then
+                    read(u, *, iostat=ios) (out_knots_xi(m), m=1, n_val)
+                end if
+            else if (index(l, 'KnotVectorEta') > 0 .and. present(out_knots_eta)) then
+                pos = index(l, ':') + 1
+                read(l(pos:), *, iostat=ios) n_val
+                if (ios == 0 .and. n_val > 0) then
+                    read(u, *, iostat=ios) (out_knots_eta(m), m=1, n_val)
+                end if
+            else if (index(l, 'KnotVector:') > 0 .and. present(out_knots_xi)) then
+                pos = index(l, ':') + 1
+                read(l(pos:), *, iostat=ios) n_val
+                if (ios == 0 .and. n_val > 0) then
+                    read(u, *, iostat=ios) (out_knots_xi(m), m=1, n_val)
+                    if (is_2d .and. present(out_knots_eta)) then
+                        out_knots_eta(1:n_val) = out_knots_xi(1:n_val)
+                    end if
+                end if
+            end if
         end do
-        close(unit)
-    end subroutine write_nodes
+    end subroutine parse_patch_block
 
-    subroutine write_elements(nelem, elems, out_dir)
-        integer, intent(in) :: nelem, elems(:,:)
-        character(len=*), intent(in) :: out_dir
-        integer :: i, unit
-        open(newunit=unit, file=trim(out_dir)//"/elements.dat", status="replace")
-        write(unit,'(A)') '# id     vtk_type        nodes...'
-        do i = 1, nelem
-            write(unit,'(I8,I12,4I8)') i, 9, elems(i, :) ! 9 = VTK_QUAD
-        end do
-        close(unit)
-    end subroutine write_elements
+    subroutine write_mesh_to_files(mesh)
+        type(t_mesh), intent(in) :: mesh
+        integer :: u, i
 
-    subroutine write_edges(n_edges, edges, bc_ids, out_dir)
-        integer, intent(in) :: n_edges, edges(:,:), bc_ids(:)
-        character(len=*), intent(in) :: out_dir
-        integer :: i, unit
-        open(newunit=unit, file=trim(out_dir)//"/edges.dat", status="replace")
-        write(unit,'(A)') '# id     node1    node2    bc_id'
-        do i = 1, n_edges
-            write(unit,'(4I8)') i, edges(i,1), edges(i,2), bc_ids(i)
+        ! 1. Export Nodes and Weights
+        open(newunit=u, file='../output/nodes.dat', status='replace')
+        write(u, '(A)') "# ID | X | Y | Weight"
+        do i = 1, mesh%n_nodes
+            write(u, '(I8, 3F15.8)') i, mesh%nodes(i,1), mesh%nodes(i,2), mesh%weights(i)
         end do
-        close(unit)
-    end subroutine write_edges
+        close(u)
 
-    subroutine write_materials(n_elems, mats, out_dir)
-        integer, intent(in) :: n_elems, mats(:)
-        character(len=*), intent(in) :: out_dir
-        integer :: i, unit
-        open(newunit=unit, file=trim(out_dir)//"/mats.dat", status="replace")
-        write(unit,'(A)') '# Elem_ID    Mat_ID'
-        do i = 1, n_elems
-            write(unit,'(I8, I10)') i, mats(i)
+        ! 2. Export Elements (Control Points)
+        open(newunit=u, file='../output/elements.dat', status='replace')
+        write(u, '(A)') "# Element ID | Control Point IDs..."
+        do i = 1, mesh%n_elems
+            write(u, '(I8, " : ", 500I8)') i, pack(mesh%elems(i,:), mesh%elems(i,:) /= 0)
         end do
-        close(unit)
-    end subroutine write_materials
+        close(u)
 
-    subroutine write_pins(n_elems, pins, out_dir)
-        integer, intent(in) :: n_elems, pins(:)
-        character(len=*), intent(in) :: out_dir
-        integer :: i, unit
-        open(newunit=unit, file=trim(out_dir)//"/pins.dat", status="replace")
-        write(unit,'(A)') '# Elem_ID    Pin_ID'
-        do i = 1, n_elems
-            write(unit,'(I8, I10)') i, pins(i)
+        ! 3. Export Edges (1D Patches)
+        open(newunit=u, file='../output/edges.dat', status='replace')
+        write(u, '(A)') "# Edge ID | Boundary ID | Control Point IDs..."
+        do i = 1, mesh%n_edges
+            write(u, '(I8, " BC:", I4, " : ", 500I8)') i, mesh%boundary_ids(i), &
+                  pack(mesh%edges(i,:), mesh%edges(i,:) /= 0)
         end do
-        close(unit)
-    end subroutine write_pins
+        close(u)
+
+        ! 4. Export Materials and Pin IDs
+        open(newunit=u, file='../output/materials.dat', status='replace')
+        write(u, '(A)') "# Elem ID | Material ID | Pin ID"
+        do i = 1, mesh%n_elems
+            write(u, '(3I10)') i, mesh%material_ids(i), mesh%pin_ids(i)
+        end do
+        close(u)
+
+        ! 5. Export Knot Vectors
+        open(newunit=u, file='../output/knot_vectors.dat', status='replace')
+        write(u, '(A)') "# Elem ID : KnotVectorXi | KnotVectorEta"
+        do i = 1, mesh%n_elems
+            write(u, '(I8, " : ", 500F12.6, " | ", 500F12.6)') i, &
+                  pack(mesh%knot_vectors_xi(i,:), mesh%knot_vectors_xi(i,:) /= 0.0_dp), &
+                  pack(mesh%knot_vectors_eta(i,:), mesh%knot_vectors_eta(i,:) /= 0.0_dp)
+        end do
+        close(u)
+    end subroutine write_mesh_to_files
+
 end module m_asmg

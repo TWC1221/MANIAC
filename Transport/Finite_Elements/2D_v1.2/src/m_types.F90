@@ -29,18 +29,23 @@ module m_types
         integer,  allocatable :: local_pivots(:,:,:,:)      ! local_pivots: (Basis, Element, Angle, Group)
         integer,  allocatable :: reflect_map(:,:,:)         ! reflect_map: (Angle, Face, Element) -> Index of reflected angle
         integer, allocatable  :: upwind_idx(:,:,:)          ! upwind_idx(face_node, face, element) -> global angular flux index
+
+        real(dp), allocatable :: weights(:)
+        real(dp), allocatable :: knot_vectors_xi(:,:)
+        real(dp), allocatable :: knot_vectors_eta(:,:)
     end type t_mesh
 
     type :: t_finite
         integer               :: order
         integer               :: n_basis
         integer               :: n_nodes_per_face
-        real(dp), allocatable :: node_roots(:)                  ! 1D Node positions
-        integer, allocatable  :: face_node_map(:,:)             ! (n_nodes_per_face, 4)
-        real(dp), allocatable :: basis_at_quad(:,:)             ! Shape functions
+        real(dp), allocatable :: knots(:)
+        real(dp), allocatable :: node_roots(:)                      ! 1D Node positions
+        integer, allocatable  :: face_node_map(:,:)         ! (n_nodes_per_face, 4)
+        real(dp), allocatable :: basis_at_quad(:,:)                     ! Shape functions
         real(dp), allocatable :: dbasis_dxi(:,:)                ! Derivatives w.r.t xi
         real(dp), allocatable :: dbasis_deta(:,:)               ! Derivatives w.r.t eta
-        real(dp), allocatable :: basis_at_bound_quad(:,:)       ! Shape functions at boundary quadrature points
+        real(dp), allocatable :: basis_at_bound_quad(:,:)      
         real(dp), allocatable :: dbasis_at_bound_quad(:,:)     
     end type t_finite
 

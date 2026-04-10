@@ -61,7 +61,7 @@ add_library(src STATIC
 set_target_properties(src PROPERTIES Fortran_PREPROCESS ON)
 
 # 4. EXECUTABLE
-add_executable(2DGFEM 2D_V1.1.F90)
+add_executable(2DGFEM 2D_V1.2.F90)
 set_target_properties(2DGFEM PROPERTIES Fortran_PREPROCESS ON)
 
 # 5. THE LINKING FIX

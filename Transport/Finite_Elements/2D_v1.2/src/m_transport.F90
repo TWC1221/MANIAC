@@ -3,6 +3,7 @@ module m_transport
     use m_types
     use m_quadrature, only: t_sn_quadrature
     use m_finite_elements
+    use m_constants, only: check_nan_scalar, check_nan_array, check_nan_matrix
     use m_material
     use m_sweep_order
 
@@ -44,21 +45,23 @@ contains
             
             do ee = 1, mesh%n_elems
                 ie = sweep_order(ee, mm)
-                
+                call check_nan_scalar(real(ie, dp), "sweep_order(ee,mm)", "Transport_Sweep, Elem "//int_to_str(ee)//", Angle "//int_to_str(mm))
                 idx_start = (ie-1)*FE%n_basis + 1
                 idx_end   = ie*FE%n_basis
 
                 do g = 1, n_groups
-                    ! 1. Load Source
                     b = total_source(idx_start:idx_end, g)
 
-                    ! 2. Assembly of Incoming Fluxes
                     do f = 1, mesh%n_faces_per_elem
                         o_n = dot_product(dir, mesh%face_normals(:, f, ie))
+                        call check_nan_scalar(o_n, "o_n", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f)//", Angle "//int_to_str(mm))
                         
                         if (o_n < 0.0_dp) then
                             neighbor_elem_id = mesh%face_connectivity(1, f, ie)
+                            call check_nan_scalar(real(neighbor_elem_id, dp), "neighbor_elem_id", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
                             if (neighbor_elem_id > 0) then 
+                                call check_nan_array(mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_x", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
+                                call check_nan_array(mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_y", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
                                 do i_face_node = 1, FE%n_nodes_per_face
                                     upwind_dof_idx = mesh%upwind_idx(i_face_node, f, ie)
                                     neighbor_flux = ang_flux(upwind_dof_idx, mm, g)
@@ -67,6 +70,8 @@ contains
                                                              dir(2)*mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie))
                                 end do
                             else if (any(mesh%face_connectivity(4, f, ie) == ref_ID)) then 
+                                call check_nan_array(mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_x", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
+                                call check_nan_array(mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_y", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
                                 m_ref = mesh%reflect_map(mm, f, ie)
                                 do i_face_node = 1, FE%n_nodes_per_face
                                     local_dof_idx = idx_start - 1 + FE%face_node_map(i_face_node, f)
@@ -79,8 +84,10 @@ contains
                     end do
 
                     ! 3. Precomputed Solve
+                    call check_nan_array(b, "b before dgetrs", "Transport_Sweep, Elem "//int_to_str(ie)//", Angle "//int_to_str(mm)//", Group "//int_to_str(g))
                     call dgetrs('N', FE%n_basis, 1, mesh%local_lu(:,:,ie,mm,g), &
                                 FE%n_basis, mesh%local_pivots(:,ie,mm,g), b, FE%n_basis, info)
+                    call check_nan_array(b, "b after dgetrs", "Transport_Sweep, Elem "//int_to_str(ie)//", Angle "//int_to_str(mm)//", Group "//int_to_str(g))
 
                     ! 4. Store
                     ang_flux(idx_start:idx_end, mm, g) = b
@@ -90,6 +97,7 @@ contains
                         local_dof_idx = idx_start + i_basis - 1
                         !$OMP ATOMIC
                         scalar_flux(local_dof_idx, g) = scalar_flux(local_dof_idx, g) + sn_quad%weights(mm) * b(i_basis)
+                        call check_nan_scalar(scalar_flux(local_dof_idx, g), "scalar_flux update", "Transport_Sweep, Elem "//int_to_str(ie)//", Angle "//int_to_str(mm)//", Group "//int_to_str(g))
                     end do
                 end do
             end do 
@@ -109,13 +117,14 @@ contains
         logical, intent(in) :: is_eigenvalue
 
         integer :: g_to, ee, mat_id
-        real(dp) :: M_phi(FE%n_basis, n_groups)
+        real(dp) :: M_phi(FE%n_basis, n_groups), fission_prod(FE%n_basis)
+        real(dp) :: scat_vec(n_groups), fiss_vec_in(n_groups), fiss_vec_out(n_groups)
         integer :: idx_start, idx_end
 
         total_src = 0.0_dp
         !$OMP PARALLEL DO DEFAULT(NONE) &
         !$OMP SHARED(mesh, FE, n_groups, materials, scalar_flux, total_src, k_eff, is_adjoint, is_eigenvalue) &
-        !$OMP PRIVATE(ee, mat_id, g_to, M_phi, idx_start, idx_end)
+        !$OMP PRIVATE(ee, mat_id, g_to, M_phi, fission_prod, idx_start, idx_end, scat_vec, fiss_vec_in, fiss_vec_out)
         do ee = 1, mesh%n_elems
             mat_id    = mesh%material_ids(ee)
             idx_start = (ee - 1) * FE%n_basis + 1
@@ -123,12 +132,24 @@ contains
         
             M_phi = matmul(mesh%elem_mass_matrix(:,:,ee), scalar_flux(idx_start:idx_end, :))
 
-            do g_to = 1, n_groups
+            if (is_eigenvalue) then
+                fiss_vec_in  = merge(materials(mat_id)%NuSigF, materials(mat_id)%Chi, .not. is_adjoint)
+                fission_prod = matmul(M_phi, fiss_vec_in)
+                
+                fiss_vec_out = merge(materials(mat_id)%Chi, materials(mat_id)%NuSigF, .not. is_adjoint)
+            end if
 
-                total_src(idx_start:idx_end, g_to) = matmul(M_phi, merge(materials(mat_id)%SigmaS(:, g_to), materials(mat_id)%SigmaS(g_to, :), .not. is_adjoint))
-                if (is_eigenvalue) then; total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + (merge(materials(mat_id)%Chi(g_to), materials(mat_id)%NuSigF(g_to), .not. is_adjoint) / k_eff) * matmul(M_phi, merge(materials(mat_id)%NuSigF, materials(mat_id)%Chi, .not. is_adjoint))
-                else; total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + materials(mat_id)%Src(g_to) * mesh%basis_integrals_vol(:, ee); end if
-            
+            do g_to = 1, n_groups
+                scat_vec = merge(materials(mat_id)%SigmaS(:, g_to), materials(mat_id)%SigmaS(g_to, :), .not. is_adjoint)
+                total_src(idx_start:idx_end, g_to) = matmul(M_phi, scat_vec)
+
+                if (is_eigenvalue) then
+                    total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + (fiss_vec_out(g_to) / k_eff) * fission_prod
+                else
+                    total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + materials(mat_id)%Src(g_to) * mesh%basis_integrals_vol(:, ee)
+                end if
+                
+                call check_nan_array(total_src(idx_start:idx_end, g_to), "total_src", "Source_DGFEM, Elem "//int_to_str(ee)//", Group "//int_to_str(g_to))
             end do
         end do
         !$OMP END PARALLEL DO
@@ -152,13 +173,17 @@ contains
         !$OMP PRIVATE(ee, mat_id, g, idx_start, idx_end)          &
         !$OMP REDUCTION(+:total_prod)
         do ee = 1, mesh%n_elems
+            if (mesh%material_ids(ee) <= 0 .or. sum(abs(mesh%elem_mass_matrix(:,:,ee))) < 1.0d-15) cycle
             mat_id = mesh%material_ids(ee)
             idx_start = (ee - 1) * FE%n_basis + 1
             idx_end = ee * FE%n_basis
 
             do g = 1, n_groups
+                call check_nan_array(scalar_flux(idx_start:idx_end, g), "scalar_flux", "Calculate_Total_Production_DGFEM, Elem "//int_to_str(ee)//", Group "//int_to_str(g))
+                call check_nan_array(mesh%basis_integrals_vol(:, ee), "basis_integrals_vol", "Calculate_Total_Production_DGFEM, Elem "//int_to_str(ee))
                 total_prod = total_prod + merge(materials(mat_id)%NuSigF(g),materials(mat_id)%Chi(g),.not. is_adjoint) * dot_product(scalar_flux(idx_start:idx_end, g), mesh%basis_integrals_vol(:, ee))
             end do
+            call check_nan_scalar(total_prod, "total_prod (cumulative)", "Calculate_Total_Production_DGFEM, Elem "//int_to_str(ee))
         end do
         !$OMP END PARALLEL DO
     end subroutine Calculate_Total_Production_DGFEM

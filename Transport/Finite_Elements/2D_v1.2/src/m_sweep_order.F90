@@ -37,7 +37,7 @@ contains
         type(t_mesh), intent(inout)  :: mesh
         type(t_finite), intent(in)   :: FE
 
-        integer :: e1, e2, f1, f2, n_nodes_per_face, orientation
+        integer :: e1, e2, f1, f2, n_nodes_per_face, orientation, n1, n2
         real(dp) :: x1, y1, x2, y2, nx, ny, len
         logical :: found_neighbor
 
@@ -109,22 +109,27 @@ contains
         ! Part 2: Outward Normals Calculation
         !$omp parallel do default(none) &
         !$omp shared(mesh, FE, n_nodes_per_face) &
-        !$omp private(e1, f1, x1, y1, x2, y2, nx, ny, len) &
+        !$omp private(e1, f1, x1, y1, x2, y2, nx, ny, len, n1, n2) &
         !$omp schedule(static)
         do e1 = 1, mesh%n_elems
             do f1 = 1, mesh%n_faces_per_elem
-                x1 = mesh%nodes(mesh%elems(e1, FE%face_node_map(1, f1)), 1)
-                y1 = mesh%nodes(mesh%elems(e1, FE%face_node_map(1, f1)), 2)
-                x2 = mesh%nodes(mesh%elems(e1, FE%face_node_map(n_nodes_per_face, f1)), 1)
-                y2 = mesh%nodes(mesh%elems(e1, FE%face_node_map(n_nodes_per_face, f1)), 2)
+                n1 = mesh%elems(e1, FE%face_node_map(1, f1))
+                n2 = mesh%elems(e1, FE%face_node_map(n_nodes_per_face, f1))
+
+                if (n1 <= 0 .or. n2 <= 0) cycle
+
+                x1 = mesh%nodes(n1, 1)
+                y1 = mesh%nodes(n1, 2)
+                x2 = mesh%nodes(n2, 1)
+                y2 = mesh%nodes(n2, 2)
 
                 nx = y2 - y1
                 ny = x1 - x2
                 len = sqrt(nx**2 + ny**2)
                 
-                if (len > dp_EPSILON) then
-                    mesh%face_normals(:, f1, e1) = [nx, ny] / len
-                end if
+                if (len < dp_EPSILON) len = 1.0_dp ! Handle degenerate edges safely
+                mesh%face_normals(:, f1, e1) = [nx, ny] / len
+
             end do
         end do
         !$omp end parallel do

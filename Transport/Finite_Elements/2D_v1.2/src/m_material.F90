@@ -14,6 +14,7 @@ module m_material
       integer :: i, max_id, n_unique
 
       max_id = max(maxval(mesh%material_ids), maxval(mesh%boundary_ids))
+      print*,max_id
       allocate(mats(max_id))
 
       allocate(unique_ids(max_id))
