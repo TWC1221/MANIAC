@@ -93,14 +93,13 @@ subroutine PETSC_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
 
     beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
     
+    allocate(edge_nodes(FE%n_basis), vals(FE%n_basis * FE%n_basis))
+
     do i = 1, mesh%n_edges
         if (mesh%edge_mats(i) == target_id) then
             ncp = mesh%n_cp_edge(i)
-            if (allocated(edge_nodes)) deallocate(edge_nodes)
-            if (allocated(vals)) deallocate(vals)
-            allocate(edge_nodes(ncp), vals(ncp*ncp))
             
-            vals = 0.0_dp
+            vals(1:ncp*ncp) = 0.0_dp
             do j = 1, ncp
                 edge_nodes(j) = mesh%edges(i, j) - 1
             end do
@@ -146,7 +145,7 @@ subroutine PCG_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
     type(t_quadrature), intent(in)    :: QuadBound
     integer,            intent(in)    :: target_id
     real(dp),           intent(in)    :: alpha
-    type(t_PCG_CSR),        intent(inout) :: A
+    type(t_PCG_CSR),    intent(inout) :: A
     
     integer  :: i, j, k, gp, node_id, node_i, node_j, ncp, i_span, row_idx
     real(dp) :: beta, detJ1D, val, dx_dxi, dy_dxi, u1, u2, xi, det_param, dV
@@ -154,13 +153,12 @@ subroutine PCG_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
     real(dp), allocatable :: local_M(:,:)
 
     beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
+    allocate(local_M(FE%n_basis, FE%n_basis))
 
     do i = 1, mesh%n_edges
         if (mesh%edge_mats(i) == target_id) then
             ncp = mesh%n_cp_edge(i)
-            if (allocated(local_M)) deallocate(local_M)
-            allocate(local_M(ncp, ncp))
-            local_M = 0.0_dp
+            local_M(1:ncp, 1:ncp) = 0.0_dp
 
             do i_span = 1, mesh%n_knots_edge(i) - 1
                 u1 = mesh%edge_knots(i, i_span); u2 = mesh%edge_knots(i, i_span+1)

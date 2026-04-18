@@ -80,6 +80,7 @@ module m_finite_elements
         integer :: p, q, span_xi, span_eta, i, j, idx
         real(dp) :: dN_xi(2, FE%p_order+1), dN_eta(2, FE%q_order+1)
         real(dp) :: W, dW_dxi, dW_deta, w_ij
+        real(dp) :: invW, invW2
 
         p = FE%p_order; q = FE%q_order
         R = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp
@@ -101,13 +102,16 @@ module m_finite_elements
             end do
         end do
 
+        invW = 1.0_dp / W
+        invW2 = invW * invW
+
         do j = 1, q + 1
             do i = 1, p + 1
                 idx = (span_eta - q + j - 2) * mesh%n_cp_xi(ee) + (span_xi - p + i - 1)
                 w_ij = mesh%weights(mesh%elems(ee, idx))
-                R(idx) = (dN_xi(1, i) * dN_eta(1, j) * w_ij) / W
-                dR_dxi(idx) = ( (dN_xi(2, i) * dN_eta(1, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_dxi ) / (W*W)
-                dR_deta(idx) = ( (dN_xi(1, i) * dN_eta(2, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_deta ) / (W*W)
+                R(idx) = (dN_xi(1, i) * dN_eta(1, j) * w_ij) * invW
+                dR_dxi(idx) = ( (dN_xi(2, i) * dN_eta(1, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_dxi ) * invW2
+                dR_deta(idx) = ( (dN_xi(1, i) * dN_eta(2, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_deta ) * invW2
             end do
         end do
     end subroutine EvalNURBS2D
@@ -121,6 +125,7 @@ module m_finite_elements
         integer :: p, span, i, idx
         real(dp) :: dN(2, FE%p_order+1)
         real(dp) :: W, dW_dxi, w_i
+        real(dp) :: invW, invW2
 
         p = FE%p_order
         R = 0.0_dp; dR_dxi = 0.0_dp
@@ -136,11 +141,14 @@ module m_finite_elements
             dW_dxi = dW_dxi + dN(2, i) * w_i
         end do
 
+        invW = 1.0_dp / W
+        invW2 = invW * invW
+
         do i = 1, p + 1
             idx = span - p + i - 1
             w_i = mesh%weights(mesh%edges(ee, idx))
-            R(idx) = (dN(1, i) * w_i) / W
-            dR_dxi(idx) = ( (dN(2, i) * w_i) * W - (dN(1, i) * w_i) * dW_dxi ) / (W*W)
+            R(idx) = (dN(1, i) * w_i) * invW
+            dR_dxi(idx) = ( (dN(2, i) * w_i) * W - (dN(1, i) * w_i) * dW_dxi ) * invW2
         end do
     end subroutine EvalNURBS1D
 

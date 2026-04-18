@@ -2,7 +2,7 @@ module m_finite_elements
     use m_constants
     use m_quadrature
     use m_types
-    use m_constants, only: dp_EPSILON, check_nan_scalar, check_nan_array, check_nan_matrix
+    use m_constants
     implicit none
     public
         

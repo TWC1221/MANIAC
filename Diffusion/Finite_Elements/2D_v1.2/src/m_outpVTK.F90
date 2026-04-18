@@ -19,12 +19,19 @@ contains
 pure function derive_case_nametag(filename) result(tag)
   character(len=*), intent(in) :: filename
   character(len=:), allocatable :: tag
-  integer :: pos
+  integer :: pos, dot_pos
 
   pos = index(filename, '/', back=.true.)
   if (pos == 0) pos = index(filename, '\', back=.true.)
 
   tag = filename(pos+1:)
+  dot_pos = index(tag, '.', back=.true.)
+  
+  if (dot_pos > 0) then
+    tag = tag(1:dot_pos-1) // ".vtk"
+  else
+    tag = tag // ".vtk"
+  end if
 end function derive_case_nametag
 
 subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
