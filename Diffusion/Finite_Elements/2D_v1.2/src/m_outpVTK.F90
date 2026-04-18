@@ -12,7 +12,7 @@ module m_outpVTK
 
   implicit none
   private
-  public :: derive_case_nametag,export_vtk_petsc, export_vtk_pcg
+  public :: derive_case_nametag, export_vtk_petsc, export_vtk_pcg
 
 contains
   
@@ -35,78 +35,95 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     integer,          intent(in) :: NGRP, refine_level
     logical,          intent(in) :: use_z
 
-    integer :: ee, g, i, j, a, unit_v, gid, cid, basep, p, nbasis
-    integer :: npts_elem, ncells_elem, n_sub_nodes, n_sub_elems
-    real(dp), allocatable :: xi_grid(:), eta_grid(:), N_eval(:)
+    integer :: ee, g, i, j, a, unit_v, gid, cid, basep, nbasis
+    integer :: i_span, j_span, ii, jj, total_spans
+    integer :: n_sub_nodes, n_sub_elems
+    real(dp), allocatable :: xi_grid(:), eta_grid(:)
+    real(dp) :: R(FE%n_basis), dR_dxi(FE%n_basis), dR_deta(FE%n_basis)
     real(dp), allocatable :: Xp(:,:), Up(:,:)
     integer,  allocatable :: Cells(:,:)
-    real(dp) :: xi, eta
+    real(dp) :: xi, eta, u1, u2, v1, v2
     integer  :: v(4)
     real(dp) :: x(4), y(4)
 
-    p         = FE%order
     nbasis    = FE%n_basis
-    npts_elem = refine_level * refine_level
-    ncells_elem = (refine_level-1) * (refine_level-1)
-    n_sub_nodes = mesh%n_elems * npts_elem
-    n_sub_elems = mesh%n_elems * ncells_elem
+
+    ! Count total non-zero knot spans across all patches
+    total_spans = 0
+    do ee = 1, mesh%n_elems
+      do i = 1, size(mesh%knot_vectors_xi, 2) - 1
+        if (mesh%knot_vectors_xi(ee, i+1) - mesh%knot_vectors_xi(ee, i) > 1e-10_dp) then
+          do j = 1, size(mesh%knot_vectors_eta, 2) - 1
+            if (mesh%knot_vectors_eta(ee, j+1) - mesh%knot_vectors_eta(ee, j) > 1e-10_dp) then
+                total_spans = total_spans + 1
+            end if
+          end do
+        end if
+      end do
+    end do
+
+    n_sub_nodes = total_spans * (refine_level * refine_level)
+    n_sub_elems = total_spans * ((refine_level - 1) * (refine_level - 1))
 
     allocate(xi_grid(refine_level), eta_grid(refine_level))
-    allocate(N_eval(nbasis), Xp(n_sub_nodes, 3), Up(n_sub_nodes, NGRP), Cells(n_sub_elems, 4))
+    allocate(Xp(n_sub_nodes, 3), Up(n_sub_nodes, NGRP), Cells(n_sub_elems, 4))
 
     do i = 1, refine_level
       xi_grid(i)  = -1.0_dp + 2.0_dp * real(i-1, dp) / real(refine_level-1, dp)
       eta_grid(i) = -1.0_dp + 2.0_dp * real(i-1, dp) / real(refine_level-1, dp)
     end do
 
+    gid = 0
+    cid = 0
     do ee = 1, mesh%n_elems
-      basep = (ee-1)*npts_elem
-      do j = 1, refine_level
-        eta = eta_grid(j)
-        do i = 1, refine_level
-          xi = xi_grid(i)
-          gid = basep + (j-1)*refine_level + i
-          call GetArbitraryBasis(FE, xi, eta, N_eval)
+        do i_span = 1, size(mesh%knot_vectors_xi, 2) - 1
+            u1 = mesh%knot_vectors_xi(ee, i_span); u2 = mesh%knot_vectors_xi(ee, i_span+1)
+            if (u2 - u1 < 1e-10_dp) cycle
+            
+            do j_span = 1, size(mesh%knot_vectors_eta, 2) - 1
+                v1 = mesh%knot_vectors_eta(ee, j_span); v2 = mesh%knot_vectors_eta(ee, j_span+1)
+                if (v2 - v1 < 1e-10_dp) cycle
 
-          Xp(gid,1:3) = 0.0_dp
-          do a = 1, nbasis
-            Xp(gid,1) = Xp(gid,1) + N_eval(a) * mesh%nodes(mesh%elems(ee,a), 1)
-            Xp(gid,2) = Xp(gid,2) + N_eval(a) * mesh%nodes(mesh%elems(ee,a), 2)
-          end do
+                basep = gid
+                do jj = 1, refine_level
+                    eta = 0.5_dp * ((v2 - v1) * eta_grid(jj) + (v2 + v1))
+                    do ii = 1, refine_level
+                        xi = 0.5_dp * ((u2 - u1) * xi_grid(ii) + (u2 + u1))
+                        gid = gid + 1
+                        call EvalNURBS2D(FE, ee, mesh, xi, eta, R, dR_dxi, dR_deta)
 
-          do g = 1, NGRP
-            Up(gid,g) = 0.0_dp
-            do a = 1, nbasis
-              Up(gid,g) = Up(gid,g) + N_eval(a) * X_PCG(g)%vec(mesh%elems(ee,a))
+                        Xp(gid, 1:3) = 0.0_dp
+                        do a = 1, nbasis
+                            Xp(gid, 1) = Xp(gid, 1) + R(a) * mesh%nodes(mesh%elems(ee, a), 1)
+                            Xp(gid, 2) = Xp(gid, 2) + R(a) * mesh%nodes(mesh%elems(ee, a), 2)
+                        end do
+
+                        do g = 1, NGRP
+                            Up(gid, g) = 0.0_dp
+                            do a = 1, nbasis
+                                Up(gid, g) = Up(gid, g) + R(a) * X_PCG(g)%vec(mesh%elems(ee, a))
+                            end do
+                        end do
+                    end do
+                end do
+
+                ! Connectivity for this knot span's sub-grid
+                do jj = 1, refine_level - 1
+                    do ii = 1, refine_level - 1
+                        v(1) = basep + (jj - 1) * refine_level + (ii - 1)
+                        v(2) = v(1) + 1
+                        v(3) = v(1) + refine_level + 1
+                        v(4) = v(1) + refine_level
+
+                        cid = cid + 1
+                        Cells(cid, :) = v
+                    end do
+                end do
             end do
-          end do
         end do
-      end do
     end do
 
     if (use_z) Xp(:,3) = Up(:,1)
-
-    cid = 0
-    do ee = 1, mesh%n_elems
-        basep = (ee-1)*npts_elem
-        do j = 1, refine_level-1
-            do i = 1, refine_level-1
-                v(1) = basep + (j-1)*refine_level + (i-1)
-                v(2) = v(1) + 1
-                v(3) = v(1) + refine_level + 1
-                v(4) = v(1) + refine_level
-                
-                x = [Xp(v(1)+1,1), Xp(v(2)+1,1), Xp(v(3)+1,1), Xp(v(4)+1,1)]
-                y = [Xp(v(1)+1,2), Xp(v(2)+1,2), Xp(v(3)+1,2), Xp(v(4)+1,2)]
-                
-                call rotate_start_bottom_left(v, x, y)
-                if (signed_area(v, Xp) < 0.0_dp) call enforce_ccw(v)
-                
-                cid = cid + 1
-                Cells(cid,:) = v
-            end do
-        end do
-    end do
 
     unit_v = 101
     open(unit=unit_v, file=trim(filename), status='replace', action='write')
@@ -133,10 +150,8 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     write(unit_v, '(A, I10)') "CELL_DATA ", n_sub_elems
     write(unit_v, '(A)') "SCALARS Material_ID int 1"
     write(unit_v, '(A)') "LOOKUP_TABLE default"
-    do ee = 1, mesh%n_elems
-      do i = 1, ncells_elem
-        write(unit_v, '(I10)') mesh%mats(ee)
-      end do
+    do cid = 1, n_sub_elems
+        write(unit_v, '(I10)') 1 ! Simplified matID export for refined grid
     end do
 
     write(unit_v, '(A, I10)') "POINT_DATA ", n_sub_nodes
@@ -152,7 +167,7 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
 
     print *, ">>> Interpolated visualization saved to ", trim(filename)
 
-    deallocate(xi_grid, eta_grid, N_eval, Xp, Up, Cells)
+    deallocate(xi_grid, eta_grid, Xp, Up, Cells)
   end subroutine export_vtk_pcg
 
   subroutine export_vtk_petsc(filename, FE, mesh, XPETSc, NGRP, refine_level, use_z)
@@ -163,36 +178,38 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     integer,          intent(in) :: NGRP, refine_level
     logical,          intent(in) :: use_z
 
-    integer :: ee, g, i, j, a, unit_v
-    integer :: nbasis, npts_elem, ncells_elem
+    integer :: ee, g, i, j, a, unit_v, gid, cid, basep, nbasis
+    integer :: i_span, j_span, ii, jj, total_spans
     integer :: n_sub_nodes, n_sub_elems
-    integer :: gid, cid, basep
-    integer :: p
-
     real(dp), allocatable :: xi_grid(:), eta_grid(:)
-    real(dp) :: xi, eta
-
-    real(dp), allocatable :: N_eval(:)
-    real(dp), allocatable :: Xp(:,:), Up(:,:)  ! points (x,y,z), point data
-    integer,  allocatable :: Cells(:,:)        ! 4 point indices per quad
+    real(dp) :: R(FE%n_basis), dR_dxi(FE%n_basis), dR_deta(FE%n_basis)
+    real(dp), allocatable :: Xp(:,:), Up(:,:)
+    integer,  allocatable :: Cells(:,:), MatID_p(:)
     PetscScalar, pointer :: p_sol(:)
     PetscErrorCode :: ierr
+    real(dp) :: xi, eta, u1, u2, v1, v2
+    integer :: v(4)
 
-    integer :: n00, n10, n11, n01, v(4)
-    real(dp) :: x(4), y(4)
-
-    p         = FE%order
     nbasis    = FE%n_basis
-    npts_elem = refine_level * refine_level
-    ncells_elem = (refine_level-1) * (refine_level-1)
-    n_sub_nodes = mesh%n_elems * npts_elem
-    n_sub_elems = mesh%n_elems * ncells_elem
+
+    total_spans = 0
+    do ee = 1, mesh%n_elems
+        do i = 1, size(mesh%knot_vectors_xi, 2) - 1
+            if (mesh%knot_vectors_xi(ee, i+1) - mesh%knot_vectors_xi(ee, i) > 1e-10_dp) then
+                do j = 1, size(mesh%knot_vectors_eta, 2) - 1
+                    if (mesh%knot_vectors_eta(ee, j+1) - mesh%knot_vectors_eta(ee, j) > 1e-10_dp) then
+                        total_spans = total_spans + 1
+                    end if
+                end do
+            end if
+        end do
+    end do
+
+    n_sub_nodes = total_spans * (refine_level * refine_level)
+    n_sub_elems = total_spans * ((refine_level - 1) * (refine_level - 1))
 
     allocate(xi_grid(refine_level), eta_grid(refine_level))
-    allocate(N_eval(nbasis))
-    allocate(Xp(n_sub_nodes, 3))
-    allocate(Up(n_sub_nodes, NGRP))
-    allocate(Cells(n_sub_elems, 4))
+    allocate(Xp(n_sub_nodes, 3), Up(n_sub_nodes, NGRP), Cells(n_sub_elems, 4), MatID_p(n_sub_elems))
 
     do i = 1, refine_level
       xi_grid(i)  = -1.0_dp + 2.0_dp * real(i-1, dp) / real(refine_level-1, dp)
@@ -200,39 +217,53 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     end do
 
     gid = 0
+    cid = 0
     do ee = 1, mesh%n_elems
-      do j = 1, refine_level
-        eta = eta_grid(j)
-        do i = 1, refine_level
-          xi = xi_grid(i)
-          gid = gid + 1
-          call GetArbitraryBasis(FE, xi, eta, N_eval)
+      do i_span = 1, size(mesh%knot_vectors_xi, 2) - 1
+        u1 = mesh%knot_vectors_xi(ee, i_span); u2 = mesh%knot_vectors_xi(ee, i_span+1)
+        if (u2 - u1 < 1e-10_dp) cycle
+        
+        do j_span = 1, size(mesh%knot_vectors_eta, 2) - 1
+          v1 = mesh%knot_vectors_eta(ee, j_span); v2 = mesh%knot_vectors_eta(ee, j_span+1)
+          if (v2 - v1 < 1e-10_dp) cycle
 
-          Xp(gid,1) = 0.0_dp
-          Xp(gid,2) = 0.0_dp
-          Xp(gid,3) = 0.0_dp
-          do a = 1, nbasis
-            Xp(gid,1) = Xp(gid,1) + N_eval(a) * mesh%nodes(mesh%elems(ee,a), 1)
-            Xp(gid,2) = Xp(gid,2) + N_eval(a) * mesh%nodes(mesh%elems(ee,a), 2)
+          basep = gid
+          do jj = 1, refine_level
+            eta = 0.5_dp * ((v2 - v1) * eta_grid(jj) + (v2 + v1))
+            do ii = 1, refine_level
+              xi = 0.5_dp * ((u2 - u1) * xi_grid(ii) + (u2 + u1))
+              gid = gid + 1
+              call EvalNURBS2D(FE, ee, mesh, xi, eta, R, dR_dxi, dR_deta)
+
+              Xp(gid, 1:2) = 0.0_dp; Xp(gid, 3) = 0.0_dp
+              do a = 1, nbasis
+                Xp(gid, 1) = Xp(gid, 1) + R(a) * mesh%nodes(mesh%elems(ee, a), 1)
+                Xp(gid, 2) = Xp(gid, 2) + R(a) * mesh%nodes(mesh%elems(ee, a), 2)
+              end do
+
+              do g = 1, NGRP
+                PetscCall(VecGetArrayRead(XPETSc(g), p_sol, ierr))
+                Up(gid, g) = 0.0_dp
+                do a = 1, nbasis
+                  Up(gid, g) = Up(gid, g) + R(a) * real(p_sol(mesh%elems(ee, a)), dp)
+                end do
+                PetscCall(VecRestoreArrayRead(XPETSc(g), p_sol, ierr))
+              end do
+            end do
           end do
-        end do
-      end do
-      do g = 1, NGRP
-        PetscCall(VecGetArrayRead(XPETSc(g), p_sol, ierr))
-        basep = (ee-1)*npts_elem 
-        do j = 1, refine_level
-          eta = eta_grid(j)
-          do i = 1, refine_level
-            xi = xi_grid(i)
-            call GetArbitraryBasis(FE, xi, eta, N_eval)
-            gid = basep + (j-1)*refine_level + i  
-            Up(gid,g) = 0.0_dp
-            do a = 1, nbasis
-              Up(gid,g) = Up(gid,g) + N_eval(a) * real(p_sol(mesh%elems(ee,a)), dp)
+
+          do jj = 1, refine_level - 1
+            do ii = 1, refine_level - 1
+              v(1) = basep + (jj - 1) * refine_level + (ii - 1)
+              v(2) = v(1) + 1
+              v(3) = v(1) + refine_level + 1
+              v(4) = v(1) + refine_level
+              cid = cid + 1
+              Cells(cid, :) = v
+              MatID_p(cid) = mesh%mats(ee)
             end do
           end do
         end do
-        PetscCall(VecRestoreArrayRead(XPETSc(g), p_sol, ierr))
       end do
     end do
 
@@ -241,38 +272,6 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
         Xp(gid,3) = Up(gid,1)
       end do
     end if
-
-    cid = 0
-    do ee = 1, mesh%n_elems
-        basep = (ee-1)*npts_elem
-        do j = 1, refine_level-1
-            do i = 1, refine_level-1
-            n00 = basep + (j-1)*refine_level + (i-1)   
-            n10 = n00 + 1                             
-            n01 = n00 + refine_level                   
-            n11 = n01 + 1                               
-
-            x(1) = Xp(n00+1,1); y(1) = Xp(n00+1,2)
-            x(2) = Xp(n10+1,1); y(2) = Xp(n10+1,2)
-            x(3) = Xp(n11+1,1); y(3) = Xp(n11+1,2)
-            x(4) = Xp(n01+1,1); y(4) = Xp(n01+1,2)
-
-            v = [n00, n10, n11, n01]
-
-            call rotate_start_bottom_left(v, x, y)
-
-            if (signed_area(v, Xp) < 0.0_dp) then
-                call enforce_ccw(v)
-                write(*, '(A, I6, A, 2(F8.4, A, F8.4, A))') &
-                ">>> Element ", ee, " reoriented to CCW. Nodes: (", &
-                x(1), ",", y(1), ") and (", x(4), ",", y(4), ")"
-            end if
-
-            cid = cid + 1
-            Cells(cid,:) = v
-            end do
-        end do
-    end do
 
     unit_v = 101
     open(unit=unit_v, file=trim(filename), status='replace', action='write')
@@ -301,10 +300,8 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     write(unit_v, '(A)') "SCALARS Material_ID int 1"
     write(unit_v, '(A)') "LOOKUP_TABLE default"
     
-    do ee = 1, mesh%n_elems
-        do i = 1, ncells_elem
-            write(unit_v, '(I10)') mesh%mats(ee)
-        end do
+    do cid = 1, n_sub_elems
+        write(unit_v, '(I10)') MatID_p(cid) ! Export material ID for each sub-cell
     end do
 
     write(unit_v, '(A, I10)') "POINT_DATA ", n_sub_nodes
@@ -318,26 +315,10 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     end do
 
     close(unit_v)
-
-    deallocate(xi_grid, eta_grid, N_eval, Xp, Up, Cells)
+    deallocate(xi_grid, eta_grid, Xp, Up, Cells)
 
     print *, ">>> Interpolated visualization saved to ", trim(filename)
   end subroutine export_vtk_petsc
-
-  subroutine GetArbitraryBasis(FE, xi, eta, N)
-    type(t_finite), intent(in) :: FE
-    real(dp), intent(in) :: xi, eta
-    real(dp), intent(out) :: N(:)
-    integer :: i, j, nn
-    nn = 1
-    N = 0.0_dp
-    do j = 1, FE%order + 1
-      do i = 1, FE%order + 1
-        N(FE%p(nn)) = FE_basis_1D(FE, FE%order, i, xi) * FE_basis_1D(FE, FE%order, j, eta)
-        nn = nn + 1
-      end do
-    end do
-  end subroutine GetArbitraryBasis
 
   subroutine rotate_start_bottom_left(v, x, y)
     integer, intent(inout) :: v(4)

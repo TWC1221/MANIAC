@@ -506,7 +506,6 @@ subroutine GetQuadTet(Quad)
 
 end subroutine GetQuadTet
 
-
 subroutine Spectral1DQuadrature(Quad, IntegOrder)
     type(t_Quadrature)      :: Quad
     integer                 :: IntegOrder

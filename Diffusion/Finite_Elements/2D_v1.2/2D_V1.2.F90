@@ -30,20 +30,20 @@ program fem2d_main
     type(t_vec), allocatable :: B_PCG(:), X_PCG(:), X_PRIME_PCG(:), FixedSrc_PCG(:)
 
     type(t_mesh)            :: mesh
-    type(t_bc_config)       :: bc_config(4)
+    type(t_bc_config)       :: bc_config(2)
     type(t_quadrature)      :: Quad, QuadBound
     type(t_finite)          :: FE
     type(t_material), allocatable :: materials(:)
     
     integer                 :: n_groups, i, k, outer_iter
-    real(dp)                :: max_phi_change, group_diff, t1, t2, t3
+    real(dp)                :: max_phi_change, group_diff
     integer                 :: solver_choice, preconditioner_choice
     integer                 :: max_outer_iter, max_CG_iter
     logical                 :: is_eigenvalue_problem, is_adjoint
     real(dp)                :: k_eff, k_eff_prime, total_production
     character(len=32)       :: InputMesh
 
-    InputMesh = "../input/wigner_test.asmg"
+    InputMesh = "../input/htr_test.asmg"
     is_eigenvalue_problem   = .true.
     is_adjoint              = .false.
     n_groups               = 7
@@ -55,18 +55,20 @@ program fem2d_main
 
     call read_asmg_mesh(InputMesh, mesh)
     FE%n_basis = mesh%nloc
-    FE%order   = nint(sqrt(real(FE%n_basis, dp))) - 1
+    FE%order   = mesh%order
 
     call Get1DLineQuad(QuadBound, FE%order + 1)
     call QuadrilateralQuadrature(Quad, FE%order + 1)
 
-    call InitialiseFiniteElements(FE, Quad, QuadBound, write_nodal_map = .false.)
+    call InitialiseFiniteElements(FE, Quad, QuadBound)
     call InitialiseMaterials(materials, mesh, n_groups, "../input/MATS.txt", printout = .false.)
 
-    call InitialiseBoundaries(bc_config(1), 101, BC_VACUUM, 0.0_dp)
-    call InitialiseBoundaries(bc_config(2), 102, BC_VACUUM, 0.0_dp)
-    call InitialiseBoundaries(bc_config(3), 103, BC_REFLECTIVE, 0.0_dp)
-    call InitialiseBoundaries(bc_config(4), 104, BC_REFLECTIVE, 0.0_dp)
+    call InitialiseBoundaries(bc_config(1), 2, BC_VACUUM, 0.0_dp)
+    call InitialiseBoundaries(bc_config(2), 3, BC_REFLECTIVE, 0.0_dp)
+
+    ! call InitialiseBoundaries(bc_config(2), 102, BC_VACUUM, 0.0_dp)
+    ! call InitialiseBoundaries(bc_config(3), 103, BC_REFLECTIVE, 0.0_dp)
+    ! call InitialiseBoundaries(bc_config(4), 104, BC_REFLECTIVE, 0.0_dp)
 
     if (solver_choice /= SOLVER_PCG) then
         call PetscInitialize(PETSC_NULL_CHARACTER, ierr)
@@ -167,7 +169,7 @@ program fem2d_main
     end do
 
     if (solver_choice /= SOLVER_PCG) then
-        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 3, .false.)
+        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 10, .false.)
         call PetscFinalize(ierr)
     else
         call export_vtk_pcg("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_PCG, n_groups, 3, .false.)

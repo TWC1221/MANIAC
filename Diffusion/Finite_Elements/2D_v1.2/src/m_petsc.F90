@@ -77,6 +77,7 @@ subroutine ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, 
     allocate(nnz(mesh%n_nodes)); nnz = 0
     do ee = 1, mesh%n_elems
         do i = 1, FE%n_basis
+            !print*, FE%n_basis, mesh%elems(ee, i), ee, i 
             row = mesh%elems(ee, i)
             nnz(row) = nnz(row) + FE%n_basis
         end do
@@ -101,6 +102,7 @@ subroutine ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, 
         end do
     end do
 
+    
     count = 0
     write(*,'(A)') " [ MATRIX ] :: Starting element-wise assembly..."
     !$OMP PARALLEL DO DEFAULT(SHARED) &
@@ -113,49 +115,56 @@ subroutine ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, 
         real(dp) :: loc_S(FE%n_basis, FE%n_basis, n_groups, n_groups)
         real(dp) :: loc_Prod(FE%n_basis, n_groups)
         real(dp) :: loc_Src(FE%n_basis, n_groups)
+        real(dp) :: FE_N(FE%n_basis), FE_N_mat(FE%n_basis, FE%n_basis)
+        real(dp) :: u1, u2, v1, v2
+        integer  :: row_b, col_b, n_basis_patch
         PetscInt :: idx(FE%n_basis)
 
         loc_A = 0.0_dp; loc_F = 0.0_dp; loc_S = 0.0_dp
         loc_Prod = 0.0_dp; loc_Src = 0.0_dp
 
         mat_id = mesh%mats(ee)
+        n_basis_patch = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee)
         idx = mesh%elems(ee, :) - 1
 
         do i = 1, FE%n_basis
             elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
         end do
-        
-        do q = 1, Quad%NoPoints
 
-            call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
-            dV = detJ * Quad%W(q)
+        ! Loop over non-zero knot spans (elements) within the patch
+        do i = 1, size(mesh%knot_vectors_xi, 2) - 1
+            u1 = mesh%knot_vectors_xi(ee, i); u2 = mesh%knot_vectors_xi(ee, i+1)
+            if (abs(u2 - u1) < 1e-10_dp) cycle
             
-            do g_to = 1, n_groups
-                do i = 1, FE%n_basis
-                    loc_Prod(i, g_to) = loc_Prod(i, g_to) + merge(mats(mat_id)%NuSigF(g_to),mats(mat_id)%Chi(g_to), .not. is_adjoint) * FE%N(q,i) * dV
-                    loc_Src(i, g_to)  = loc_Src(i, g_to)  + mats(mat_id)%Src(g_to) * FE%N(q,i) * dV
+            do j = 1, size(mesh%knot_vectors_eta, 2) - 1
+                v1 = mesh%knot_vectors_eta(ee, j); v2 = mesh%knot_vectors_eta(ee, j+1)
+                if (abs(v2 - v1) < 1e-10_dp) cycle
+        
+                do q = 1, Quad%NoPoints
+                    call GetMapping(FE, ee, mesh, q, Quad, u1, u2, v1, v2, elem_coords, &
+                                    dN_dx, dN_dy, detJ, FE_N, FE_N_mat)
+                    dV = detJ * Quad%W(q)
                     
-                    do j = 1, FE%n_basis
-                        loc_A(i, j, g_to) = loc_A(i, j, g_to) + (mats(mat_id)%D(g_to) * (dN_dx(i)*dN_dx(j) + dN_dy(i)*dN_dy(j)) + mats(mat_id)%SigmaR(g_to) * FE%N_mat(q,i,j)) * dV
+                    do g_to = 1, n_groups
+                        do row_b = 1, n_basis_patch
+                            loc_Prod(row_b, g_to) = loc_Prod(row_b, g_to) + merge(mats(mat_id)%NuSigF(g_to),mats(mat_id)%Chi(g_to), .not. is_adjoint) * FE_N(row_b) * dV
+                            loc_Src(row_b, g_to)  = loc_Src(row_b, g_to)  + mats(mat_id)%Src(g_to) * FE_N(row_b) * dV
+                            
+                            do col_b = 1, n_basis_patch
+                                loc_A(row_b, col_b, g_to) = loc_A(row_b, col_b, g_to) + (mats(mat_id)%D(g_to) * (dN_dx(row_b)*dN_dx(col_b) + dN_dy(row_b)*dN_dy(col_b)) + mats(mat_id)%SigmaR(g_to) * FE_N_mat(row_b,col_b)) * dV
 
-                        do g_from = 1, n_groups
-                            if (.not. is_adjoint) then
-                                nusigf_val = mats(mat_id)%NuSigF(g_from)
-                                chi_val    = mats(mat_id)%Chi(g_to)
-                            else
-                                nusigf_val = mats(mat_id)%Chi(g_from)
-                                chi_val    = mats(mat_id)%NuSigF(g_to)
-                            end if
-                            loc_F(i, j, g_to, g_from) = loc_F(i, j, g_to, g_from) + chi_val * nusigf_val * FE%N_mat(q,i,j) * dV
+                                do g_from = 1, n_groups
+                                    nusigf_val = merge(mats(mat_id)%NuSigF(g_from), mats(mat_id)%Chi(g_from), .not. is_adjoint)
+                                    chi_val    = merge(mats(mat_id)%Chi(g_to), mats(mat_id)%NuSigF(g_to), .not. is_adjoint)
+                                    
+                                    loc_F(row_b, col_b, g_to, g_from) = loc_F(row_b, col_b, g_to, g_from) + chi_val * nusigf_val * FE_N_mat(row_b,col_b) * dV
 
-                            if (g_from /= g_to) then
-                                if (.not. is_adjoint) then
-                                    sigma_s_val = mats(mat_id)%SigmaS(g_from, g_to)
-                                else
-                                    sigma_s_val = mats(mat_id)%SigmaS(g_to, g_from)
-                                end if
-                                loc_S(i, j, g_to, g_from) = loc_S(i, j, g_to, g_from) + sigma_s_val * FE%N_mat(q,i,j) * dV
-                            end if
+                                    if (g_from /= g_to) then
+                                        sigma_s_val = merge(mats(mat_id)%SigmaS(g_from, g_to), mats(mat_id)%SigmaS(g_to, g_from), .not. is_adjoint)
+                                        loc_S(row_b, col_b, g_to, g_from) = loc_S(row_b, col_b, g_to, g_from) + sigma_s_val * FE_N_mat(row_b,col_b) * dV
+                                    end if
+                                end do
+                            end do
                         end do
                     end do
                 end do

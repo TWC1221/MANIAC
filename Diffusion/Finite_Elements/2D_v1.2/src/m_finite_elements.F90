@@ -7,225 +7,188 @@ module m_finite_elements
         
     contains
 
-    subroutine InitialiseFiniteElements(FE, Quad, QuadBound, write_nodal_map)
+    subroutine InitialiseFiniteElements(FE, Quad, QuadBound)
         type(t_finite), intent(inout) :: FE
         type(t_quadrature), intent(in) :: Quad, QuadBound
-        integer :: q, i, j, n, idx, Poly
-        logical :: write_nodal_map
+        integer :: i, idx, Poly
 
-        
         Poly = FE%order
-        FE%n_basis = (Poly + 1)**2
-        
-        call finite_1D_positions(FE, Poly)
+        FE%p_order = Poly
+        FE%q_order = Poly
+        ! n_basis is patch-dependent and taken as max CP count in the global mesh
 
-        if (allocated(FE%N))       deallocate(FE%N)
-        if (allocated(FE%dN_dxi))  deallocate(FE%dN_dxi)
-        if (allocated(FE%dN_deta)) deallocate(FE%dN_deta)
-        if (allocated(FE%N_mat))   deallocate(FE%N_mat)
-        if (allocated(FE%N_B))     deallocate(FE%N_B)
-        if (allocated(FE%dN_B))    deallocate(FE%dN_B)
         if (allocated(FE%p))       deallocate(FE%p)
-
-        allocate(FE%N(Quad%NoPoints, FE%n_basis))
-        allocate(FE%dN_dxi(Quad%NoPoints, FE%n_basis))
-        allocate(FE%dN_deta(Quad%NoPoints, FE%n_basis))
-        allocate(FE%N_mat(Quad%NoPoints, FE%n_basis, FE%n_basis))
-        
-        allocate(FE%N_B(QuadBound%NoPoints, Poly + 1))
-        allocate(FE%dN_B(QuadBound%NoPoints, Poly + 1))
         allocate(FE%p(FE%n_basis))
-
-
-        call GetVTKOrderVector(FE)
-        if (write_nodal_map) then
-        print*, "ELement Nodal INDEX Map:"
-        print*, "---------------------------------"
-        do j = Poly + 1, 1, -1
-            write(*, '(A2, I2, A3)', advance='no') "j=", j, " |"
-            do i = 1, Poly + 1
-                idx = i + (j-1)*(Poly + 1)
-                write(*, '(I4)', advance='no') FE%p(idx)
-            end do
-            write(*,*)
-        end do
-        print*, "---------------------------------"
-        write(*, '(A, I2)') " Element Order: ", Poly
-        end if
-
-        do q = 1, Quad%NoPoints
-            n = 1
-            do j = 1, Poly + 1     ! y-direction
-                do i = 1, Poly + 1 ! x-direction
-                    
-                    FE%N(q, FE%p(n)) = FE_basis_1D(FE, Poly, i, Quad%Xi(q)) * &
-                                        FE_basis_1D(FE, Poly, j, Quad%Eta(q))
-
-                    FE%dN_dxi(q, FE%p(n)) = FE_basis_derivative_1D(FE, Poly, i, Quad%Xi(q)) * &
-                                             FE_basis_1D(FE, Poly, j, Quad%Eta(q))
-                    
-                    FE%dN_deta(q, FE%p(n)) = FE_basis_1D(FE, Poly, i, Quad%Xi(q)) * &
-                                              FE_basis_derivative_1D(FE, Poly, j, Quad%Eta(q))
-                    n = n + 1
-                end do
-            end do
-            FE%N_mat(q,:,:) = outer_product(FE%N(q,:), FE%N(q,:))
-        end do
-
-        do q = 1, QuadBound%NoPoints
-            do i = 1, Poly + 1
-                FE%N_B(q, i) = FE_basis_1D(FE, Poly, i, QuadBound%Xi(q))
-                FE%dN_B(q, i) = FE_basis_derivative_1D(FE, Poly, i, QuadBound%Xi(q))
-            end do
-        end do
-    end subroutine InitialiseFiniteElements
-
-    subroutine GetMapping(FE, q, elem_coords, dN_dx, dN_dy, detJ)
-        type(t_finite), intent(in)   :: FE
-        integer, intent(in)          :: q            
-        real(dp), intent(in)         :: elem_coords(:,:) 
-        real(dp), intent(out)        :: dN_dx(:), dN_dy(:)
-        real(dp), intent(out)        :: detJ
-
-        real(dp) :: J(2,2), invJ(2,2), dNdXiEta(2, FE%n_basis)
-        integer  :: i ! For error message loop
-
-        dNdXiEta(1, :) = FE%dN_dxi(q, :)
-        dNdXiEta(2, :) = FE%dN_deta(q, :)
-        J = matmul(dNdXiEta, elem_coords)
-
-        detJ = J(1,1)*J(2,2) - J(1,2)*J(2,1)
-
-        if (detJ <= 1.0d-10) then
-            print *, " "
-            print *, ">>> GEOMETRY ERROR: detJ =", detJ
-            print *, ">>> Check node ordering for element coordinates below:"
-            do i = 1, FE%n_basis
-                write(*, '(A, I2, A, F10.5, A, F10.5, A)') "Node ", i, ": (", &
-                    elem_coords(i,1), ", ", elem_coords(i,2), ")"
-            end do
-            print *, ">>> Check if Nodes 2 and 4 are swapped in your map!"
-            print *, " "
-            stop "FATAL: Mapping failed due to non-positive Jacobian."
-        end if
-
-        invJ(1,1) =  J(2,2) / detJ
-        invJ(1,2) = -J(1,2) / detJ
-        invJ(2,1) = -J(2,1) / detJ
-        invJ(2,2) =  J(1,1) / detJ
-
-        dN_dx = invJ(1,1) * FE%dN_dxi(q, :) + invJ(1,2) * FE%dN_deta(q, :)
-        dN_dy = invJ(2,1) * FE%dN_dxi(q, :) + invJ(2,2) * FE%dN_deta(q, :)
-
-    end subroutine GetMapping
-
-subroutine GetVTKOrderVector(FE)
-        type(t_finite), intent(inout) :: FE
-        integer :: P, n, i, j, idx, L, curP
-        integer, allocatable :: temp_map(:,:)
-
-        P = FE%order
-        if (allocated(FE%p)) deallocate(FE%p)
-        allocate(FE%p(FE%n_basis))
-        allocate(temp_map(P+1, P+1))
-
-        n = 1
-        L = 1
-        curP = P
-
-        do while (curP >= 1)
-            temp_map(L, L)             = n; n = n + 1 ! BL
-            temp_map(L + curP, L)      = n; n = n + 1 ! BR
-            temp_map(L + curP, L + curP)= n; n = n + 1 ! TR
-            temp_map(L, L + curP)      = n; n = n + 1 ! TL
-
-            if (curP > 1) then
-                do i = L + 1, L + curP - 1
-                    temp_map(i, L) = n; n = n + 1 ! Bottom
-                end do
-                do j = L + 1, L + curP - 1
-                    temp_map(L + curP, j) = n; n = n + 1 ! Right
-                end do
-                do i = L + curP - 1, L + 1, -1
-                    temp_map(i, L + curP) = n; n = n + 1 ! Top
-                end do
-                do j = L + curP - 1, L + 1, -1
-                    temp_map(L, j) = n; n = n + 1 ! Left
-                end do
-            end if
-
-            L = L + 1
-            curP = curP - 2
-        end do
-
-        if (curP == 0) temp_map(L, L) = n
 
         idx = 1
-        do j = 1, P+1
-            do i = 1, P+1
-                FE%p(idx) = temp_map(i, j)
-                idx = idx + 1
+        do i = 1, FE%n_basis
+            FE%p(i) = i
+        end do
+
+    end subroutine InitialiseFiniteElements
+
+    subroutine GetMapping(FE, ee, mesh, q, Quad, u1, u2, v1, v2, elem_coords, dN_dx, dN_dy, detJ, R, R_mat)
+        type(t_finite), intent(in)   :: FE
+        integer, intent(in)          :: ee
+        integer, intent(in)          :: q
+        type(t_mesh), intent(in)     :: mesh
+        type(t_quadrature), intent(in) :: Quad
+        real(dp), intent(in)         :: u1, u2, v1, v2
+        real(dp), intent(in)         :: elem_coords(:,:) 
+        real(dp), intent(out)        :: dN_dx(:), dN_dy(:)
+        real(dp), intent(out)        :: detJ, R(:)
+        real(dp), optional, intent(out) :: R_mat(:,:)
+
+        real(dp) :: J(2,2), invJ(2,2), dRdXiEta(2, size(R)), detJ_param
+        real(dp) :: dR_dxi(size(R)), dR_deta(size(R))
+        real(dp) :: xi, eta
+
+        ! Map from reference [-1,1] to knot span [u1, u2]
+        xi = 0.5_dp * ((u2 - u1) * Quad%Xi(q) + (u2 + u1))
+        eta = 0.5_dp * ((v2 - v1) * Quad%Eta(q) + (v2 + v1))
+        detJ_param = 0.25_dp * (u2 - u1) * (v2 - v1)
+
+        ! Evaluate NURBS basis functions and parametric derivatives
+        call EvalNURBS2D(FE, ee, mesh, xi, eta, R, dR_dxi, dR_deta)
+
+        ! Physical mapping Jacobian
+        dRdXiEta(1, :) = dR_dxi
+        dRdXiEta(2, :) = dR_deta
+        J = matmul(dRdXiEta, elem_coords)
+
+        detJ = (J(1,1)*J(2,2) - J(1,2)*J(2,1)) * detJ_param
+
+        if (abs(detJ) < 1e-15_dp) detJ = 1e-15_dp
+
+        invJ(1,1) =  J(2,2) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
+        invJ(1,2) = -J(1,2) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
+        invJ(2,1) = -J(2,1) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
+        invJ(2,2) =  J(1,1) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
+
+        dN_dx = invJ(1,1) * dR_dxi + invJ(1,2) * dR_deta
+        dN_dy = invJ(2,1) * dR_dxi + invJ(2,2) * dR_deta
+
+        if (present(R_mat)) R_mat = spread(R, dim=2, ncopies=FE%n_basis) * spread(R, dim=1, ncopies=FE%n_basis)
+    end subroutine GetMapping
+
+    subroutine EvalNURBS2D(FE, ee, mesh, xi, eta, R, dR_dxi, dR_deta)
+        type(t_finite), intent(in) :: FE
+        integer, intent(in) :: ee
+        type(t_mesh), intent(in) :: mesh
+        real(dp), intent(in) :: xi, eta 
+        real(dp), intent(out) :: R(:), dR_dxi(:), dR_deta(:)
+        integer :: p, q, span_xi, span_eta, i, j, idx
+        real(dp) :: dN_xi(2, FE%p_order+1), dN_eta(2, FE%q_order+1)
+        real(dp) :: W, dW_dxi, dW_deta, w_ij
+
+        p = FE%p_order; q = FE%q_order
+        R = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp
+
+        call FindSpan(mesh%n_cp_xi(ee)-1, p, xi, mesh%knot_vectors_xi(ee, :), span_xi)
+        call FindSpan(mesh%n_cp_eta(ee)-1, q, eta, mesh%knot_vectors_eta(ee, :), span_eta)
+        call DersBasisFuns(span_xi, xi, p, 1, mesh%knot_vectors_xi(ee, :), dN_xi)
+        call DersBasisFuns(span_eta, eta, q, 1, mesh%knot_vectors_eta(ee, :), dN_eta)
+
+        W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp
+        do j = 1, q + 1
+            do i = 1, p + 1
+                !print*,span_eta, q, j, mesh%n_cp_xi(ee), span_xi, p, i
+                idx = (span_eta - q + j - 2) * mesh%n_cp_xi(ee) + (span_xi - p + i - 1)
+                w_ij = mesh%weights(mesh%elems(ee, idx))
+                W = W + dN_xi(1, i) * dN_eta(1, j) * w_ij
+                dW_dxi = dW_dxi + dN_xi(2, i) * dN_eta(1, j) * w_ij
+                dW_deta = dW_deta + dN_xi(1, i) * dN_eta(2, j) * w_ij
             end do
         end do
-        deallocate(temp_map)
-    end subroutine GetVTKOrderVector
 
-    subroutine finite_1D_positions(FE, PolyOrder)
-        type(t_finite), intent(inout) :: FE
-        integer, intent(in)         :: PolyOrder
-        integer :: i
-        real(dp) :: dxi
-
-        if (allocated(FE%Xi)) deallocate(FE%Xi)
-        allocate(FE%Xi(PolyOrder + 1))
-
-        if (PolyOrder == 1) then
-            FE%Xi(1) = -1.0_dp
-            FE%Xi(2) =  1.0_dp
-            return
-        end if
-
-        dxi = 2.0_dp / real(PolyOrder, dp)
-        do i = 1, PolyOrder + 1
-            FE%Xi(i) = -1.0_dp + (i-1)*dxi
+        do j = 1, q + 1
+            do i = 1, p + 1
+                idx = (span_eta - q + j - 2) * mesh%n_cp_xi(ee) + (span_xi - p + i - 1)
+                w_ij = mesh%weights(mesh%elems(ee, idx))
+                R(idx) = (dN_xi(1, i) * dN_eta(1, j) * w_ij) / W
+                dR_dxi(idx) = ( (dN_xi(2, i) * dN_eta(1, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_dxi ) / (W*W)
+                dR_deta(idx) = ( (dN_xi(1, i) * dN_eta(2, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_deta ) / (W*W)
+            end do
         end do
-    end subroutine finite_1D_positions
+    end subroutine EvalNURBS2D
 
-    real(dp) function FE_basis_1D(FE, Poly, i, Xi) result(SF)
-        type(t_finite)          :: FE
-        integer, intent(in)     :: i, Poly
-        real(dp), intent(in)    :: Xi
-        integer                 :: p
-        SF = 1.0_dp
-        do p = 1, 1 + Poly
-            if (p /= i) SF = SF * (Xi - FE%Xi(p)) / (FE%Xi(i) - FE%Xi(p))
+    subroutine EvalNURBS1D(FE, ee, mesh, xi, R, dR_dxi)
+        type(t_finite), intent(in) :: FE
+        integer, intent(in) :: ee ! edge index
+        type(t_mesh), intent(in) :: mesh
+        real(dp), intent(in) :: xi
+        real(dp), intent(out) :: R(:), dR_dxi(:)
+        integer :: p, span, i, idx
+        real(dp) :: dN(2, FE%p_order+1)
+        real(dp) :: W, dW_dxi, w_i
+
+        p = FE%p_order
+        R = 0.0_dp; dR_dxi = 0.0_dp
+
+        call FindSpan(mesh%n_cp_edge(ee)-1, p, xi, mesh%edge_knots(ee, :), span)
+        call DersBasisFuns(span, xi, p, 1, mesh%edge_knots(ee, :), dN)
+
+        W = 0.0_dp; dW_dxi = 0.0_dp
+        do i = 1, p + 1
+            idx = span - p + i - 1
+            w_i = mesh%weights(mesh%edges(ee, idx))
+            W = W + dN(1, i) * w_i
+            dW_dxi = dW_dxi + dN(2, i) * w_i
         end do
-    end function FE_basis_1D
 
-    real(dp) function FE_basis_derivative_1D(FE, Poly, i, Xi) result(dSF)
-        type(t_finite)          :: FE
-        integer, intent(in)     :: i, Poly
-        real(dp), intent(in)    :: Xi
-        real(dp)                :: TempValue
-        integer                 :: p, q
-        dSF = 0.0_dp
-        do p = 1, 1 + Poly
-            if (p /= i) then
-                TempValue = 1.0_dp / (FE%Xi(i) - FE%Xi(p))
-                do q = 1, 1 + Poly
-                    if (q /= i .and. q /= p) then
-                        TempValue = TempValue * (Xi - FE%Xi(q)) / (FE%Xi(i) - FE%Xi(q))
-                    end if
-                end do
-                dSF = dSF + TempValue
-            end if
+        do i = 1, p + 1
+            idx = span - p + i - 1
+            w_i = mesh%weights(mesh%edges(ee, idx))
+            R(idx) = (dN(1, i) * w_i) / W
+            dR_dxi(idx) = ( (dN(2, i) * w_i) * W - (dN(1, i) * w_i) * dW_dxi ) / (W*W)
         end do
-    end function FE_basis_derivative_1D
+    end subroutine EvalNURBS1D
 
-    function outer_product(a, b) result(mat)
-        real(8), intent(in)  :: a(:), b(:)
-        real(8)              :: mat(size(a,1), size(b,1))
-        mat = spread(a, dim=2, ncopies=size(b,1)) * spread(b, dim=1, ncopies=size(a,1))
-    end function outer_product
-    
+    subroutine FindSpan(n, p, u, UU, span)
+        integer, intent(in) :: n, p
+        real(dp), intent(in) :: u, UU(:)
+        integer, intent(out) :: span
+        integer :: low, high, mid
+        if (u >= UU(n+2)) then; span = n + 1; return; end if
+        if (u <= UU(p+1)) then; span = p + 1; return; end if
+        low = p + 1; high = n + 1; mid = (low + high) / 2
+        do while (u < UU(mid) .or. u >= UU(mid+1))
+            if (u < UU(mid)) then; high = mid; else; low = mid; end if
+            mid = (low + high) / 2
+        end do
+        span = mid
+    end subroutine FindSpan
+
+    subroutine DersBasisFuns(i, u, p, n, UU, ders)
+        integer, intent(in) :: i, p, n
+        real(dp), intent(in) :: u, UU(:)
+        real(dp), intent(out) :: ders(n+1, p+1)
+        real(dp) :: ndu(p+1, p+1), left(p+1), right(p+1), saved, temp, d, a(2, p+1)
+        integer :: j, r, k, s1, s2, rk, pk, j1, j2
+        ndu(1,1) = 1.0_dp
+        do j = 1, p
+            left(j+1) = u - UU(i+1-j); right(j+1) = UU(i+j) - u; saved = 0.0_dp
+            do r = 1, j
+                ndu(j+1, r) = right(r+1) + left(j-r+2)
+                temp = ndu(r, j) / ndu(j+1, r)
+                ndu(r, j+1) = saved + right(r+1) * temp; saved = left(j-r+2) * temp
+            end do
+            ndu(j+1, j+1) = saved
+        end do
+        ders(1, :) = ndu(:, p+1)
+        do r = 0, p
+            s1 = 0; s2 = 1; a(1, 1) = 1.0_dp
+            do k = 1, n
+                d = 0.0_dp; rk = r - k; pk = p - k
+                if (r >= k) then; a(s2+1, 1) = a(s1+1, 1) / ndu(pk+2, rk+1); d = a(s2+1, 1) * ndu(rk+1, pk+1); end if
+                j1 = merge(1, -rk+1, rk >= -1); j2 = merge(k-1, p-r, r <= p-k)
+                do j = j1, j2; a(s2+1, j+1) = (a(s1+1, j+1) - a(s1+1, j)) / ndu(pk+2, rk+j+1); d = d + a(s2+1, j+1) * ndu(rk+j+1, pk+1); end do
+                if (r <= pk) then; a(s2+1, k+1) = -a(s1+1, k) / ndu(pk+2, r+1); d = d + a(s2+1, k+1) * ndu(r+1, pk+1); end if
+                ders(k+1, r+1) = d; j = s1; s1 = s2; s2 = j
+            end do
+        end do
+        r = p
+        do k = 1, n; ders(k+1, :) = ders(k+1, :) * r; r = r * (p - k); end do
+    end subroutine DersBasisFuns
+
 end module m_finite_elements

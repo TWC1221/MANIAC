@@ -14,12 +14,12 @@ contains
         integer :: unit, iostatus, i, j, k
         real(dp) :: dummy_coord
         character(len=1024) :: line
-        integer :: patch_count, edge_count, p_count
+        integer :: patch_count, edge_count, p_count, poly_order
         integer :: max_cp, max_knots, pos
 
         open(newunit=unit, file=filepath, status='old', action='read')
-        patch_count = 0; edge_count = 0; p_count = 0
-        max_cp = 4; max_knots = 6
+        patch_count = 0; edge_count = 0; p_count = 0; poly_order = 0
+        max_cp = 0; max_knots = 0
         
         do
             read(unit, '(A)', iostat=iostatus) line
@@ -28,6 +28,9 @@ contains
             
             if (index(line, '$2D_Patch_Description_Start') > 0) then
                 patch_count = patch_count + 1
+            else if (index(line, 'PolyOrder') > 0) then
+                pos = index(line, ' ')
+                read(line(pos+1:), *) poly_order
             else if (index(line, '$1D_Patch_Description_Start') > 0) then
                 edge_count = edge_count + 1
             else if (index(line, 'POINTS') == 1) then
@@ -55,6 +58,7 @@ contains
         mesh%n_nodes = p_count
         mesh%n_edges = edge_count
         mesh%nloc    = max_cp
+        mesh%order   = poly_order
         mesh%dim     = 2
 
         allocate(mesh%nodes(mesh%n_nodes, mesh%dim))
@@ -66,6 +70,12 @@ contains
         allocate(mesh%mats(mesh%n_elems))
         allocate(mesh%edge_mats(mesh%n_edges))
         allocate(mesh%edges(mesh%n_edges, max_cp)); mesh%edges = 0
+
+        allocate(mesh%n_cp_xi(mesh%n_elems), mesh%n_cp_eta(mesh%n_elems))
+        allocate(mesh%n_knots_xi_patch(mesh%n_elems), mesh%n_knots_eta_patch(mesh%n_elems))
+        allocate(mesh%n_cp_edge(mesh%n_edges), mesh%n_knots_edge(mesh%n_edges))
+        mesh%n_cp_xi = 0; mesh%n_cp_eta = 0; mesh%n_knots_xi_patch = 0; mesh%n_knots_eta_patch = 0
+        mesh%n_cp_edge = 0; mesh%n_knots_edge = 0
                 
         rewind(unit)
     
@@ -91,14 +101,17 @@ contains
             ! 2. 1D Patches (Edges)
             else if (index(line, '$1D_Patch_Description_Start') > 0) then
                 i = i + 1
-                call parse_patch_block(unit, mesh%edges(i,:), mesh%edge_mats(i), .false., &
-                                     out_knots_xi=mesh%edge_knots(i,:))
+                call parse_patch_block(unit, mesh%edges(i,:), mesh%edge_mats(i), .false., n_cp=mesh%n_cp_edge(i), &
+                                     out_knots_xi=mesh%edge_knots(i,:), n_k_xi=mesh%n_knots_edge(i))
 
             ! 3. 2D Patches (Elements)
             else if (index(line, '$2D_Patch_Description_Start') > 0) then
                 j = j + 1
                 call parse_patch_block(unit, mesh%elems(j,:), mesh%mats(j), &
-                                     .true., out_knots_xi=mesh%knot_vectors_xi(j,:), out_knots_eta=mesh%knot_vectors_eta(j,:))
+                                     .true., out_knots_xi=mesh%knot_vectors_xi(j,:), out_knots_eta=mesh%knot_vectors_eta(j,:), &
+                                     n_k_xi=mesh%n_knots_xi_patch(j), n_k_eta=mesh%n_knots_eta_patch(j))
+                mesh%n_cp_xi(j) = mesh%n_knots_xi_patch(j) - mesh%order - 1
+                mesh%n_cp_eta(j) = mesh%n_knots_eta_patch(j) - mesh%order - 1
             end if
         end do
         
@@ -111,12 +124,14 @@ contains
         
     end subroutine read_asmg_mesh
 
-    subroutine parse_patch_block(u, out_cp, out_id2, is_2d, out_knots_xi, out_knots_eta)
+    subroutine parse_patch_block(u, out_cp, out_id2, is_2d, n_cp, out_knots_xi, out_knots_eta, n_k_xi, n_k_eta)
         integer, intent(in) :: u
         integer, intent(inout) :: out_cp(:)
         integer, intent(out)   :: out_id2
         logical, intent(in)    :: is_2d
+        integer, intent(out), optional :: n_cp
         real(dp), intent(inout), optional :: out_knots_xi(:), out_knots_eta(:)
+        integer, intent(out), optional :: n_k_xi, n_k_eta
         
         character(len=1024) :: l
         integer :: ios, n_val, m, pos
@@ -143,6 +158,7 @@ contains
             else if (index(l, 'control_points:') > 0) then
                 pos = index(l, ':') + 1
                 read(l(pos:), *, iostat=ios) n_val
+                if (present(n_cp)) n_cp = n_val
                 if (ios == 0 .and. n_val > 0) then
                     read(u, *, iostat=ios) (out_cp(m), m=1, n_val)
                     if (ios == 0) out_cp(1:n_val) = out_cp(1:n_val) + 1
@@ -153,8 +169,10 @@ contains
                 read(l(pos+1:), *, iostat=ios) n_val
                 if (ios == 0 .and. n_val > 0) then
                     read(u, *, iostat=ios) (out_knots_xi(m), m=1, n_val)
+                    if (present(n_k_xi)) n_k_xi = n_val
                     if (is_2d .and. present(out_knots_eta)) then
                         out_knots_eta(1:n_val) = out_knots_xi(1:n_val)
+                        if (present(n_k_eta)) n_k_eta = n_val
                     end if
                 end if
             else if (index(l, 'KnotVectorEta') > 0 .and. present(out_knots_eta)) then
@@ -163,8 +181,10 @@ contains
                 read(l(pos+1:), *, iostat=ios) n_val
                 if (ios == 0 .and. n_val > 0) then
                     read(u, *, iostat=ios) (out_knots_eta(m), m=1, n_val)
+                    if (present(n_k_eta)) n_k_eta = n_val
                     if (is_2d .and. present(out_knots_xi)) then
                         out_knots_xi(1:n_val) = out_knots_eta(1:n_val)
+                        if (present(n_k_xi)) n_k_xi = n_val
                     end if
                 end if
             else if (index(l, 'KnotVector') > 0 .and. present(out_knots_xi)) then
@@ -173,8 +193,10 @@ contains
                 read(l(pos+1:), *, iostat=ios) n_val
                 if (ios == 0 .and. n_val > 0) then
                     read(u, *, iostat=ios) (out_knots_xi(m), m=1, n_val)
+                    if (present(n_k_xi)) n_k_xi = n_val
                     if (is_2d .and. present(out_knots_eta)) then
                         out_knots_eta(1:n_val) = out_knots_xi(1:n_val)
+                        if (present(n_k_eta)) n_k_eta = n_val
                     end if
                 end if
             end if

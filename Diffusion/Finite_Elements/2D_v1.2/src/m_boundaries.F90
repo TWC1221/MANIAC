@@ -84,47 +84,56 @@ subroutine PETSC_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
     real(dp),           intent(in)    :: alpha
     Mat,                intent(inout) :: A
     
-    integer  :: i, j, k, gp, npe, node_id
-    real(dp) :: beta, detJ1D, dx_dxi, dy_dxi
+    integer  :: i, j, k, gp, node_id, ncp, i_span, row_idx, row_b, col_b
+    real(dp) :: beta, detJ1D, dx_dxi, dy_dxi, u1, u2, xi, det_param, dV
+    real(dp) :: R(FE%n_basis), dR_dxi(FE%n_basis)
     PetscInt, allocatable :: edge_nodes(:)
     PetscScalar, allocatable :: vals(:)
     PetscErrorCode :: ierr
 
     beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
-    npe = FE%order + 1 
     
-    allocate(edge_nodes(npe), vals(npe*npe))
-
     do i = 1, mesh%n_edges
         if (mesh%edge_mats(i) == target_id) then
-            do j = 1, npe
+            ncp = mesh%n_cp_edge(i)
+            if (allocated(edge_nodes)) deallocate(edge_nodes)
+            if (allocated(vals)) deallocate(vals)
+            allocate(edge_nodes(ncp), vals(ncp*ncp))
+            
+            vals = 0.0_dp
+            do j = 1, ncp
                 edge_nodes(j) = mesh%edges(i, j) - 1
             end do
 
-            vals = 0.0_dp
-            do gp = 1, QuadBound%NoPoints
-                dx_dxi = 0.0_dp
-                dy_dxi = 0.0_dp
-                
-                do k = 1, npe
-                    node_id = mesh%edges(i, k)
-                    if (node_id > 0) then
-                        dx_dxi = dx_dxi + mesh%nodes(node_id, 1) * FE%dN_B(gp, k)
-                        dy_dxi = dy_dxi + mesh%nodes(node_id, 2) * FE%dN_B(gp, k)
-                    end if
-                end do
-                detJ1D = sqrt(dx_dxi**2 + dy_dxi**2)
+            ! Loop over non-zero knot spans in the 1D edge patch
+            do i_span = 1, mesh%n_knots_edge(i) - 1
+                u1 = mesh%edge_knots(i, i_span); u2 = mesh%edge_knots(i, i_span+1)
+                if (abs(u2 - u1) < 1e-10_dp) cycle
 
-                do j = 1, npe
-                    do k = 1, npe
-                        vals((j-1)*npe + k) = vals((j-1)*npe + k) + &
-                            FE%N_B(gp, j) * FE%N_B(gp, k) * &
-                            detJ1D * QuadBound%W(gp) * beta
+                do gp = 1, QuadBound%NoPoints
+                    xi = 0.5_dp * ((u2 - u1) * QuadBound%Xi(gp) + (u2 + u1))
+                    det_param = 0.5_dp * (u2 - u1)
+
+                    call EvalNURBS1D(FE, i, mesh, xi, R, dR_dxi)
+
+                    dx_dxi = 0.0_dp; dy_dxi = 0.0_dp
+                    do row_idx = 1, ncp
+                        node_id = mesh%edges(i, row_idx)
+                        dx_dxi = dx_dxi + mesh%nodes(node_id, 1) * dR_dxi(row_idx)
+                        dy_dxi = dy_dxi + mesh%nodes(node_id, 2) * dR_dxi(row_idx)
+                    end do
+                    detJ1D = sqrt(dx_dxi**2 + dy_dxi**2) * det_param
+                    dV = detJ1D * QuadBound%W(gp) * beta
+
+                    do row_b = 1, ncp
+                        do col_b = 1, ncp
+                            vals((row_b-1)*ncp + col_b) = vals((row_b-1)*ncp + col_b) + R(row_b) * R(col_b) * dV
+                        end do
                     end do
                 end do
             end do
             
-            call MatSetValues(A, npe, edge_nodes, npe, edge_nodes, vals, ADD_VALUES, ierr)
+            call MatSetValues(A, ncp, edge_nodes, ncp, edge_nodes, vals, ADD_VALUES, ierr)
         end if
     end do
 
@@ -139,43 +148,51 @@ subroutine PCG_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
     real(dp),           intent(in)    :: alpha
     type(t_PCG_CSR),        intent(inout) :: A
     
-    integer  :: i, j, k, gp, npe, node_id, node_i, node_j
-    real(dp) :: beta, detJ1D, val, dx_dxi, dy_dxi
+    integer  :: i, j, k, gp, node_id, node_i, node_j, ncp, i_span, row_idx
+    real(dp) :: beta, detJ1D, val, dx_dxi, dy_dxi, u1, u2, xi, det_param, dV
+    real(dp) :: R(FE%n_basis), dR_dxi(FE%n_basis)
     real(dp), allocatable :: local_M(:,:)
 
     beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
-    npe = FE%order + 1 
-    
-    allocate(local_M(npe, npe))
 
     do i = 1, mesh%n_edges
         if (mesh%edge_mats(i) == target_id) then
+            ncp = mesh%n_cp_edge(i)
+            if (allocated(local_M)) deallocate(local_M)
+            allocate(local_M(ncp, ncp))
             local_M = 0.0_dp
-            do gp = 1, QuadBound%NoPoints
-                dx_dxi = 0.0_dp
-                dy_dxi = 0.0_dp
-                do k = 1, npe
-                    node_id = mesh%edges(i, k)
-                    if (node_id > 0) then
-                        dx_dxi = dx_dxi + mesh%nodes(node_id, 1) * FE%dN_B(gp, k)
-                        dy_dxi = dy_dxi + mesh%nodes(node_id, 2) * FE%dN_B(gp, k)
-                    end if
-                end do
-                detJ1D = sqrt(dx_dxi**2 + dy_dxi**2)
-                
-                do j = 1, npe
-                    do k = 1, npe
-                        local_M(j, k) = local_M(j, k) + &
-                            FE%N_B(gp, j) * FE%N_B(gp, k) * &
-                            detJ1D * QuadBound%W(gp) * beta
+
+            do i_span = 1, mesh%n_knots_edge(i) - 1
+                u1 = mesh%edge_knots(i, i_span); u2 = mesh%edge_knots(i, i_span+1)
+                if (abs(u2 - u1) < 1e-10_dp) cycle
+
+                do gp = 1, QuadBound%NoPoints
+                    xi = 0.5_dp * ((u2 - u1) * QuadBound%Xi(gp) + (u2 + u1))
+                    det_param = 0.5_dp * (u2 - u1)
+
+                    call EvalNURBS1D(FE, i, mesh, xi, R, dR_dxi)
+
+                    dx_dxi = 0.0_dp; dy_dxi = 0.0_dp
+                    do row_idx = 1, ncp
+                        node_id = mesh%edges(i, row_idx)
+                        dx_dxi = dx_dxi + mesh%nodes(node_id, 1) * dR_dxi(row_idx)
+                        dy_dxi = dy_dxi + mesh%nodes(node_id, 2) * dR_dxi(row_idx)
+                    end do
+                    detJ1D = sqrt(dx_dxi**2 + dy_dxi**2) * det_param
+                    dV = detJ1D * QuadBound%W(gp) * beta
+                    
+                    do j = 1, ncp
+                        do k = 1, ncp
+                            local_M(j, k) = local_M(j, k) + R(j) * R(k) * dV
+                        end do
                     end do
                 end do
             end do
             
-            do j = 1, npe
+            do j = 1, ncp
                 node_i = mesh%edges(i, j)
                 if (node_i <= 0) cycle
-                do k = 1, npe
+                do k = 1, ncp
                     node_j = mesh%edges(i, k)
                     if (node_j <= 0) cycle
                     val = local_M(j, k)

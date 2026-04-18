@@ -3,12 +3,17 @@ module m_types
     implicit none
     
     type t_mesh
-        integer               :: n_nodes, n_elems, n_edges, nloc, dim
+        integer               :: order, n_nodes, n_elems, n_edges, nloc, dim
         real(dp), allocatable :: nodes(:,:), weights(:)
         integer,  allocatable :: elems(:,:)
         integer,  allocatable :: edges(:,:)
         integer,  allocatable :: mats(:)       ! For Quads
         integer,  allocatable :: edge_mats(:)  ! For Lines/Boundaries
+
+        integer,  allocatable :: n_cp_xi(:), n_cp_eta(:)
+        integer,  allocatable :: n_knots_xi_patch(:), n_knots_eta_patch(:)
+        integer,  allocatable :: n_cp_edge(:)
+        integer,  allocatable :: n_knots_edge(:)
 
         real(dp), allocatable :: knot_vectors_xi(:,:)
         real(dp), allocatable :: knot_vectors_eta(:,:)
@@ -16,7 +21,7 @@ module m_types
     end type t_mesh
 
     type :: t_finite
-        integer               :: order
+        integer               :: order, p_order, q_order
         integer               :: n_basis
         integer, allocatable  :: p(:)          ! Nodal Mappings
         real(dp), allocatable :: Xi(:)         ! 1D Node positions
