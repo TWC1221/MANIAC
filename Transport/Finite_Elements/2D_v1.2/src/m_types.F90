@@ -7,13 +7,17 @@ module m_types
         integer               :: n_elems
         integer               :: n_edges
         integer               :: n_faces_per_elem
+        integer               :: nloc
+        integer               :: order
         integer               :: dim
 
         real(dp), allocatable :: nodes(:,:)
         integer,  allocatable :: elems(:,:)
         integer,  allocatable :: edges(:,:)
+        integer,  allocatable :: mats(:)      
+        integer,  allocatable :: edge_mats(:)  
         integer,  allocatable :: material_ids(:)      
-        integer,  allocatable :: boundary_ids(:)  
+        integer,  allocatable :: boundary_ids(:)
         integer,  allocatable :: pin_ids(:)
 
         integer, allocatable  :: face_connectivity(:,:,:)       
@@ -33,10 +37,15 @@ module m_types
         real(dp), allocatable :: weights(:)
         real(dp), allocatable :: knot_vectors_xi(:,:)
         real(dp), allocatable :: knot_vectors_eta(:,:)
+        real(dp), allocatable :: edge_knots(:,:)
+        integer,  allocatable :: n_cp_xi(:), n_cp_eta(:)
+        integer,  allocatable :: n_knots_xi_patch(:), n_knots_eta_patch(:)
+        integer,  allocatable :: n_cp_edge(:), n_knots_edge(:)
     end type t_mesh
 
     type :: t_finite
-        integer               :: order
+        integer               :: order, p_order, q_order
+        integer, allocatable  :: p(:)
         integer               :: n_basis
         integer               :: n_nodes_per_face
         real(dp), allocatable :: knots(:)

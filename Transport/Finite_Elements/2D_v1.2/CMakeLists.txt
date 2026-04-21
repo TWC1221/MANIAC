@@ -51,7 +51,7 @@ add_library(src STATIC
     src/m_types.F90
     src/m_asmg.F90
     src/m_quadrature.F90
-    src/m_finite_elements.F90
+    src/m_basis.F90
     src/m_material.F90
     src/m_precompute.F90
     src/m_outpVTK_dfem.F90

@@ -2,7 +2,7 @@ module m_transport
     use m_constants
     use m_types
     use m_quadrature, only: t_sn_quadrature
-    use m_finite_elements
+    use m_basis
     use m_constants, only: check_nan_scalar, check_nan_array, check_nan_matrix
     use m_material
     use m_sweep_order
@@ -31,7 +31,8 @@ contains
         integer, intent(in) :: sweep_order(:,:), ref_ID(:), n_groups
 
         integer :: mm, ee, ie, g, f, m_ref, info
-        integer :: neighbor_elem_id, i_face_node, i_basis, upwind_dof_idx, local_dof_idx
+        integer :: neighbor_elem_id, i_face_node, i_basis, upwind_dof_idx, local_dof_idx, n_f_cp, n_patch_basis
+        integer :: idx_f(mesh%nloc) ! idx_f stores local CP indices for a face
         real(dp) :: b(FE%n_basis), o_n, dir(2), neighbor_flux
         integer :: idx_start, idx_end
 
@@ -39,18 +40,23 @@ contains
         scalar_flux = 0.0_dp
 
         !$OMP PARALLEL DO SCHEDULE(DYNAMIC) &
-        !$OMP& PRIVATE(mm, dir, ee, ie, g, b, f, o_n, neighbor_elem_id, i_face_node, i_basis, upwind_dof_idx, local_dof_idx, m_ref, info, neighbor_flux, idx_start, idx_end)
+        !$OMP& PRIVATE(mm, dir, ee, ie, g, b, f, o_n, neighbor_elem_id, i_face_node, i_basis, upwind_dof_idx, local_dof_idx, m_ref, info, neighbor_flux, idx_start, idx_end, n_f_cp, n_patch_basis, idx_f)
         do mm = 1, sn_quad%n_angles
             dir = sn_quad%dirs(mm, 1:2)
             
             do ee = 1, mesh%n_elems
                 ie = sweep_order(ee, mm)
                 call check_nan_scalar(real(ie, dp), "sweep_order(ee,mm)", "Transport_Sweep, Elem "//int_to_str(ee)//", Angle "//int_to_str(mm))
+                
+                n_patch_basis = mesh%n_cp_xi(ie) * mesh%n_cp_eta(ie)
+                if (n_patch_basis <= 0) cycle ! Skip elements with no control points
+                if (all(abs(mesh%local_lu(1,1,ie,mm,1:n_groups)) < 1d-18)) cycle ! Safety skip for uninitialized LU
+
                 idx_start = (ie-1)*FE%n_basis + 1
-                idx_end   = ie*FE%n_basis
+                idx_end   = idx_start + n_patch_basis - 1 ! Adjusted end index for active DOFs
 
                 do g = 1, n_groups
-                    b = total_source(idx_start:idx_end, g)
+                    b(1:n_patch_basis) = total_source(idx_start:idx_end, g)
 
                     do f = 1, mesh%n_faces_per_elem
                         o_n = dot_product(dir, mesh%face_normals(:, f, ie))
@@ -59,41 +65,41 @@ contains
                         if (o_n < 0.0_dp) then
                             neighbor_elem_id = mesh%face_connectivity(1, f, ie)
                             call check_nan_scalar(real(neighbor_elem_id, dp), "neighbor_elem_id", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
+                            call get_face_cp_indices(ie, f, mesh, idx_f, n_f_cp)
                             if (neighbor_elem_id > 0) then 
-                                call check_nan_array(mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_x", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
-                                call check_nan_array(mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_y", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
-                                do i_face_node = 1, FE%n_nodes_per_face
+                                do i_face_node = 1, n_f_cp
                                     upwind_dof_idx = mesh%upwind_idx(i_face_node, f, ie)
                                     neighbor_flux = ang_flux(upwind_dof_idx, mm, g)
                                     ! Vector update to b
-                                    b = b - neighbor_flux * (dir(1)*mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie) + &
-                                                             dir(2)*mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie))
+                                    b(1:n_patch_basis) = b(1:n_patch_basis) - neighbor_flux * &
+                                                         (dir(1)*mesh%face_mass_x(1:n_patch_basis, idx_f(i_face_node), f, ie) + &
+                                                          dir(2)*mesh%face_mass_y(1:n_patch_basis, idx_f(i_face_node), f, ie))
                                 end do
                             else if (any(mesh%face_connectivity(4, f, ie) == ref_ID)) then 
-                                call check_nan_array(mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_x", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
-                                call check_nan_array(mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie), "face_mass_y", "Transport_Sweep, Elem "//int_to_str(ie)//", Face "//int_to_str(f))
                                 m_ref = mesh%reflect_map(mm, f, ie)
-                                do i_face_node = 1, FE%n_nodes_per_face
-                                    local_dof_idx = idx_start - 1 + FE%face_node_map(i_face_node, f)
+                                do i_face_node = 1, n_f_cp
+                                    local_dof_idx = idx_start - 1 + idx_f(i_face_node)
                                     neighbor_flux = ang_flux(local_dof_idx, m_ref, g)
-                                    b = b - neighbor_flux * (dir(1)*mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie) + &
-                                                             dir(2)*mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie))
+                                    b(1:n_patch_basis) = b(1:n_patch_basis) - neighbor_flux * &
+                                                         (dir(1)*mesh%face_mass_x(1:n_patch_basis, idx_f(i_face_node), f, ie) + &
+                                                          dir(2)*mesh%face_mass_y(1:n_patch_basis, idx_f(i_face_node), f, ie))
                                 end do
                             end if
                         end if
                     end do
 
                     ! 3. Precomputed Solve
-                    call check_nan_array(b, "b before dgetrs", "Transport_Sweep, Elem "//int_to_str(ie)//", Angle "//int_to_str(mm)//", Group "//int_to_str(g))
-                    call dgetrs('N', FE%n_basis, 1, mesh%local_lu(:,:,ie,mm,g), &
-                                FE%n_basis, mesh%local_pivots(:,ie,mm,g), b, FE%n_basis, info)
-                    call check_nan_array(b, "b after dgetrs", "Transport_Sweep, Elem "//int_to_str(ie)//", Angle "//int_to_str(mm)//", Group "//int_to_str(g))
+                    call check_nan_array(b(1:n_patch_basis), "b before dgetrs", "Transport_Sweep, Elem "//int_to_str(ie)//", Angle "//int_to_str(mm)//", Group "//int_to_str(g))
+                    ! Solve for the active part of b
+                    call dgetrs('N', n_patch_basis, 1, mesh%local_lu(1,1,ie,mm,g), &
+                                FE%n_basis, mesh%local_pivots(1,ie,mm,g), b(1), FE%n_basis, info)
+                    call check_nan_array(b(1:n_patch_basis), "b after dgetrs", "Transport_Sweep, Elem "//int_to_str(ie)//", Angle "//int_to_str(mm)//", Group "//int_to_str(g))
 
                     ! 4. Store
-                    ang_flux(idx_start:idx_end, mm, g) = b
+                    ang_flux(idx_start:idx_end, mm, g) = b(1:n_patch_basis)
                     
                     ! 5. Update Scalar Flux (Vector atomic update)
-                    do i_basis = 1, FE%n_basis
+                    do i_basis = 1, n_patch_basis ! Loop only over actual basis functions
                         local_dof_idx = idx_start + i_basis - 1
                         !$OMP ATOMIC
                         scalar_flux(local_dof_idx, g) = scalar_flux(local_dof_idx, g) + sn_quad%weights(mm) * b(i_basis)
@@ -119,34 +125,35 @@ contains
         integer :: g_to, ee, mat_id
         real(dp) :: M_phi(FE%n_basis, n_groups), fission_prod(FE%n_basis)
         real(dp) :: scat_vec(n_groups), fiss_vec_in(n_groups), fiss_vec_out(n_groups)
-        integer :: idx_start, idx_end
+        integer :: idx_start, idx_end, n_patch_basis
 
         total_src = 0.0_dp
-        !$OMP PARALLEL DO DEFAULT(NONE) &
-        !$OMP SHARED(mesh, FE, n_groups, materials, scalar_flux, total_src, k_eff, is_adjoint, is_eigenvalue) &
-        !$OMP PRIVATE(ee, mat_id, g_to, M_phi, fission_prod, idx_start, idx_end, scat_vec, fiss_vec_in, fiss_vec_out)
+        !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ee, mat_id, g_to, M_phi, fission_prod, idx_start, idx_end, scat_vec, fiss_vec_in, fiss_vec_out, n_patch_basis) &
+        !$OMP& SHARED(mesh, FE, n_groups, materials, scalar_flux, total_src, k_eff, is_adjoint, is_eigenvalue)
         do ee = 1, mesh%n_elems
             mat_id    = mesh%material_ids(ee)
+            n_patch_basis = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee)
+            if (n_patch_basis <= 0) cycle
             idx_start = (ee - 1) * FE%n_basis + 1
-            idx_end   = ee * FE%n_basis
+            idx_end   = idx_start + n_patch_basis - 1
         
-            M_phi = matmul(mesh%elem_mass_matrix(:,:,ee), scalar_flux(idx_start:idx_end, :))
+            M_phi(1:n_patch_basis, :) = matmul(mesh%elem_mass_matrix(1:n_patch_basis, 1:n_patch_basis, ee), scalar_flux(idx_start:idx_end, :))
 
             if (is_eigenvalue) then
                 fiss_vec_in  = merge(materials(mat_id)%NuSigF, materials(mat_id)%Chi, .not. is_adjoint)
-                fission_prod = matmul(M_phi, fiss_vec_in)
+                fission_prod(1:n_patch_basis) = matmul(M_phi(1:n_patch_basis, :), fiss_vec_in)
                 
                 fiss_vec_out = merge(materials(mat_id)%Chi, materials(mat_id)%NuSigF, .not. is_adjoint)
             end if
 
             do g_to = 1, n_groups
                 scat_vec = merge(materials(mat_id)%SigmaS(:, g_to), materials(mat_id)%SigmaS(g_to, :), .not. is_adjoint)
-                total_src(idx_start:idx_end, g_to) = matmul(M_phi, scat_vec)
+                total_src(idx_start:idx_end, g_to) = matmul(M_phi(1:n_patch_basis, :), scat_vec)
 
                 if (is_eigenvalue) then
-                    total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + (fiss_vec_out(g_to) / k_eff) * fission_prod
+                    total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + (fiss_vec_out(g_to) / k_eff) * fission_prod(1:n_patch_basis)
                 else
-                    total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + materials(mat_id)%Src(g_to) * mesh%basis_integrals_vol(:, ee)
+                    total_src(idx_start:idx_end, g_to) = total_src(idx_start:idx_end, g_to) + materials(mat_id)%Src(g_to) * mesh%basis_integrals_vol(1:n_patch_basis, ee)
                 end if
                 
                 call check_nan_array(total_src(idx_start:idx_end, g_to), "total_src", "Source_DGFEM, Elem "//int_to_str(ee)//", Group "//int_to_str(g_to))
@@ -165,23 +172,24 @@ contains
         logical, intent(in)             :: is_adjoint
 
         integer                         :: g, ee, mat_id
-        integer                         :: idx_start, idx_end
+        integer                         :: idx_start, idx_end, n_patch_basis    
 
         total_prod = 0.0_dp
-        !$OMP PARALLEL DO DEFAULT(NONE)                                      &
-        !$OMP SHARED(mesh, FE, n_groups, materials, scalar_flux, is_adjoint) &
-        !$OMP PRIVATE(ee, mat_id, g, idx_start, idx_end)          &
-        !$OMP REDUCTION(+:total_prod)
+        !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ee, mat_id, g, idx_start, idx_end, n_patch_basis) &
+        !$OMP& SHARED(mesh, FE, n_groups, materials, scalar_flux, is_adjoint) REDUCTION(+:total_prod)
         do ee = 1, mesh%n_elems
-            if (mesh%material_ids(ee) <= 0 .or. sum(abs(mesh%elem_mass_matrix(:,:,ee))) < 1.0d-15) cycle
+            n_patch_basis = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee)
+            if (n_patch_basis <= 0) cycle
+            if (mesh%material_ids(ee) <= 0 .or. sum(abs(mesh%elem_mass_matrix(1:n_patch_basis,1:n_patch_basis,ee))) < 1.0d-15) cycle
             mat_id = mesh%material_ids(ee)
             idx_start = (ee - 1) * FE%n_basis + 1
-            idx_end = ee * FE%n_basis
+            idx_end = idx_start + n_patch_basis - 1
 
             do g = 1, n_groups
                 call check_nan_array(scalar_flux(idx_start:idx_end, g), "scalar_flux", "Calculate_Total_Production_DGFEM, Elem "//int_to_str(ee)//", Group "//int_to_str(g))
-                call check_nan_array(mesh%basis_integrals_vol(:, ee), "basis_integrals_vol", "Calculate_Total_Production_DGFEM, Elem "//int_to_str(ee))
-                total_prod = total_prod + merge(materials(mat_id)%NuSigF(g),materials(mat_id)%Chi(g),.not. is_adjoint) * dot_product(scalar_flux(idx_start:idx_end, g), mesh%basis_integrals_vol(:, ee))
+                call check_nan_array(mesh%basis_integrals_vol(1:n_patch_basis, ee), "basis_integrals_vol", "Calculate_Total_Production_DGFEM, Elem "//int_to_str(ee))
+                total_prod = total_prod + merge(materials(mat_id)%NuSigF(g),materials(mat_id)%Chi(g),.not. is_adjoint) * &
+                             dot_product(scalar_flux(idx_start:idx_end, g), mesh%basis_integrals_vol(1:n_patch_basis, ee))
             end do
             call check_nan_scalar(total_prod, "total_prod (cumulative)", "Calculate_Total_Production_DGFEM, Elem "//int_to_str(ee))
         end do

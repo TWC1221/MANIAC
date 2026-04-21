@@ -4,7 +4,7 @@ program fem2d_main
     use m_types
     use m_asmg, only: read_asmg_mesh
     use m_quadrature, only: InitialiseQuadrature
-    use m_finite_elements, only: InitialiseFiniteElements
+    use m_basis
     use m_sweep_order, only: InitialiseGeometry
     use m_material, only: InitialiseMaterials
     use m_constants, only: check_nan_scalar, check_nan_array, check_nan_matrix, int_to_str
@@ -35,11 +35,11 @@ program fem2d_main
     is_eigenvalue_problem  = .true.
     is_adjoint             = .false.
 
-    InputMesh              = "../input/wigner_test.asmg"
+    InputMesh              = "../input/pincell_test.asmg"
     ref_ID                 = [-1] !B=101,R=102,T=103,L=104
     n_groups               = 7
 
-    FE%order               = 1
+    FE%order               = 2
     QuadSn%order           = 8
 
     max_outer_iter          = 600
@@ -48,6 +48,7 @@ program fem2d_main
     t1 = omp_get_wtime()
 
     call read_asmg_mesh(InputMesh, mesh)
+    FE%n_basis = mesh%nloc
 
     call InitialiseQuadrature(FE, mesh, Quad1D, Quad2D, QuadSn, is_adjoint, is_SEM)
     call InitialiseFiniteElements(FE, Quad1D, Quad2D)

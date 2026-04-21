@@ -1,7 +1,7 @@
 module m_outpVTK_dfem
     use m_constants
     use m_types
-    use m_finite_elements
+    use m_basis
     use m_material
     use m_quadrature
     implicit none
@@ -45,11 +45,11 @@ contains
         character(len=*), intent(in)                :: filename
         real(dp), allocatable                       :: pin_powers_ref(:)
 
-        integer :: ee, g, k, i, pin_cnt, idx_start, idx_end
-        real(dp) :: fission_rate_total, elem_fission, factor, detJ
-        real(dp) :: el_nodes(FE%n_basis, 2), el_weights(FE%n_basis)
+        integer :: ee, g, k, i, pin_cnt, idx_start, idx_end, si, sj
+        real(dp) :: fission_rate_total, elem_fission, factor, detJ, u1, u2, v1, v2
+        real(dp) :: el_nodes(FE%n_basis, 2)
         real(dp) :: dN_dx(FE%n_basis), dN_dy(FE%n_basis)
-        real(dp) :: u_local(n_groups), basis_rational(FE%n_basis)
+        real(dp) :: u_local(n_groups), basis_eval(FE%n_basis)
         real(dp) :: total_pin_power, min_pin_power, max_err
         integer :: max_pin
 
@@ -63,24 +63,39 @@ contains
             if (.not. allocated(materials(mesh%material_ids(ee))%SigF)) cycle
             if (sum(materials(mesh%material_ids(ee))%SigF) < 1.0e-20) cycle
 
-            el_nodes = mesh%nodes(mesh%elems(ee, 1:FE%n_basis), 1:2)
-            el_weights = mesh%weights(mesh%elems(ee, 1:FE%n_basis))
+            el_nodes = 0.0_dp
+            do i = 1, FE%n_basis
+                if (mesh%elems(ee, i) > 0) el_nodes(i, :) = mesh%nodes(mesh%elems(ee, i), 1:2)
+            end do
 
             idx_start = (ee-1)*FE%n_basis + 1
             idx_end   = ee*FE%n_basis
             
             elem_fission = 0.0_dp
-            do k = 1, Quad2D%n_points
-                call GetMapping(FE, k, el_nodes, dN_dx, dN_dy, detJ, el_weights, basis_rational)
-                if (abs(detJ) < 1.0d-15) cycle
+            do sj = 1, mesh%n_knots_eta_patch(ee) - 1
+                v1 = mesh%knot_vectors_eta(ee, sj)
+                v2 = mesh%knot_vectors_eta(ee, sj+1)
+                if (v2 - v1 < 1.0d-14) cycle
+                
+                do si = 1, mesh%n_knots_xi_patch(ee) - 1
+                    u1 = mesh%knot_vectors_xi(ee, si)
+                    u2 = mesh%knot_vectors_xi(ee, si+1)
+                    if (u2 - u1 < 1.0d-14) cycle
 
-                u_local = 0.0_dp
-                do g = 1, n_groups
-                    u_local(g) = dot_product(scalar_flux(idx_start:idx_end, g), basis_rational)
+                    do k = 1, Quad2D%n_points
+                        call GetMapping(FE, ee, mesh, k, Quad2D, u1, u2, v1, v2, el_nodes, dN_dx, dN_dy, detJ, basis_eval)
+                        if (abs(detJ) < 1.0d-15) cycle
+
+                        u_local = 0.0_dp
+                        do g = 1, n_groups
+                            u_local(g) = dot_product(scalar_flux(idx_start:idx_end, g), basis_eval)
+                        end do
+
+                        elem_fission = elem_fission + Quad2D%weights(k) * abs(detJ) * dot_product(materials(mesh%material_ids(ee))%SigF, u_local)
+                    end do
                 end do
-
-                elem_fission = elem_fission + Quad2D%weights(k) * abs(detJ) * dot_product(materials(mesh%material_ids(ee))%SigF, u_local)
             end do
+
             fission_rate_total = fission_rate_total + elem_fission
             if (mesh%pin_ids(ee) > 0) pin_powers(mesh%pin_ids(ee)) = pin_powers(mesh%pin_ids(ee)) + elem_fission
         end do
@@ -192,10 +207,10 @@ contains
         integer :: gid, cid, basep, p
         integer :: refine_level
 
-        real(dp), allocatable :: xi_grid(:), eta_grid(:), weights_local(:)
-        real(dp), allocatable :: N_eval(:), reordered_coords(:,:)
+        real(dp), allocatable :: N_eval(:), dR_dxi(:), dR_deta(:)
+        real(dp), allocatable :: reordered_coords(:,:)
         real(dp), allocatable :: Xp(:,:), Up(:,:)
-        real(dp)              :: p_pow
+        real(dp)              :: p_pow, xi, eta, xi_min, xi_max, eta_min, eta_max
         integer,  allocatable :: Cells(:,:)
 
         integer :: n00, n10, n11, n01
@@ -212,33 +227,35 @@ contains
         n_sub_nodes  = mesh%n_elems * npts_elem
         n_sub_elems  = mesh%n_elems * ncells_elem
 
-        allocate(xi_grid(refine_level), eta_grid(refine_level))
-        allocate(N_eval(nbasis), reordered_coords(nbasis, 2))
-        allocate(weights_local(nbasis))
+        allocate(N_eval(nbasis), dR_dxi(nbasis), dR_deta(nbasis))
+        allocate(reordered_coords(nbasis, 2))
         allocate(Xp(n_sub_nodes, 3), Up(n_sub_nodes, NGRP))
         allocate(Cells(n_sub_elems, 4))
-
-        ! Define interpolation coordinates in reference space [-1, 1]
-        do i = 1, refine_level
-            xi_grid(i)  = -1.0_dp + 2.0_dp * real(i-1, dp) / real(p, dp)
-            eta_grid(i) = xi_grid(i)
-        end do
 
         ! 1. Interpolate geometry and solution to the sub-grid
         gid = 0
         do ee = 1, mesh%n_elems
             basep = (ee-1)*nbasis
-            ! Get actual physical coordinates of the high-order nodes
+
+            ! Get actual physical coordinates of the control points
+            reordered_coords = 0.0_dp
             do i = 1, nbasis
-                reordered_coords(i, :) = mesh%nodes(mesh%elems(ee, i), 1:2)
+                if (mesh%elems(ee, i) > 0) reordered_coords(i, :) = mesh%nodes(mesh%elems(ee, i), 1:2)
             end do
-            weights_local = mesh%weights(mesh%elems(ee, 1:nbasis))
+
+            ! Determine parametric bounds of the patch
+            xi_min = mesh%knot_vectors_xi(ee, 1)
+            xi_max = mesh%knot_vectors_xi(ee, mesh%n_knots_xi_patch(ee))
+            eta_min = mesh%knot_vectors_eta(ee, 1)
+            eta_max = mesh%knot_vectors_eta(ee, mesh%n_knots_eta_patch(ee))
             
             ! Loop through eta (j) then xi (i) to match standard VTK ordering
             do j = 1, refine_level
+                eta = eta_min + (eta_max - eta_min) * real(j-1, dp) / max(1.0_dp, real(refine_level-1, dp))
                 do i = 1, refine_level
+                    xi = xi_min + (xi_max - xi_min) * real(i-1, dp) / max(1.0_dp, real(refine_level-1, dp))
                     gid = gid + 1
-                    call GetArbitraryBasis(FE, xi_grid(i), eta_grid(j), N_eval, weights_local)
+                    call EvalNURBS2D(FE, ee, mesh, xi, eta, N_eval, dR_dxi, dR_deta)
                     
                     Xp(gid,1) = dot_product(N_eval, reordered_coords(:, 1))
                     Xp(gid,2) = dot_product(N_eval, reordered_coords(:, 2))
@@ -353,7 +370,7 @@ contains
         end do
 
         close(unit_v)
-        deallocate(xi_grid, eta_grid, N_eval, reordered_coords, Xp, Up, Cells)
+        deallocate(N_eval, dR_dxi, dR_deta, reordered_coords, Xp, Up, Cells)
 
     end subroutine export_dfem_vtk
 
