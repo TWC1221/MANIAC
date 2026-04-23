@@ -151,9 +151,9 @@ module m_basis
 
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp
         do j = 1, qq + 1
-            j_g = span_eta - qq + j - 1 ! 0-indexed global basis function index for Eta
+            j_g = span_eta - qq + j - 2 ! 0-indexed global basis function index for Eta
             do i = 1, pp + 1
-                i_g = span_xi - pp + i - 1 ! 0-indexed global basis function index for Xi
+                i_g = span_xi - pp + i - 2 ! 0-indexed global basis function index for Xi
                 loc_idx_global_cp = j_g * Ni + i_g + 1
                 node_id = mesh%edges(ee, loc_idx_global_cp)
                 w_ij = mesh%weights(node_id)
@@ -168,9 +168,9 @@ module m_basis
         invW2 = invW * invW
 
         do j = 1, qq + 1
-            j_g = span_eta - qq + j - 1
+            j_g = span_eta - qq + j - 2
             do i = 1, pp + 1
-                i_g = span_xi - pp + i - 1
+                i_g = span_xi - pp + i - 2
                 loc_idx_global_cp = j_g * Ni + i_g + 1
                 node_id = mesh%edges(ee, loc_idx_global_cp)
                 w_ij = merge(mesh%weights(node_id), 1.0_dp, node_id > 0)
@@ -215,20 +215,21 @@ module m_basis
         ! 3. First Pass: Compute the NURBS denominator (W) and its derivatives
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp; dW_dzeta = 0.0_dp
         
-        do i = 1, pp + 1
-            i_g = span_xi - pp + i - 2
-            do j = 1, qq + 1
-                j_g = span_eta - qq + j - 2
+        do j = 1, qq + 1
+            j_g = span_eta - qq + j - 2
+            do i = 1, pp + 1
+                i_g = span_xi - pp + i - 2
                 do k = 1, rr + 1
                     k_g = span_zeta - rr + k - 2
+                    ! Mapping: Eta (slowest) -> Xi (middle) -> Zeta (fastest)
                     loc_idx_global_cp = j_g * (Ni * Nk) + i_g * Nk + k_g + 1
-
                     node_id = mesh%elems(ee, loc_idx_global_cp)
 
                     w_ijk = merge(mesh%weights(node_id), 1.0_dp, node_id > 0)
 
                     W        = W        + dN_xi(1, i) * dN_eta(1, j) * dN_zeta(1, k) * w_ijk
                     dW_dxi   = dW_dxi   + dN_xi(2, i) * dN_eta(1, j) * dN_zeta(1, k) * w_ijk
+                    dW_deta  = dW_deta  + dN_xi(1, i) * dN_eta(2, j) * dN_zeta(1, k) * w_ijk
                     dW_dzeta = dW_dzeta + dN_xi(1, i) * dN_eta(1, j) * dN_zeta(2, k) * w_ijk
                 end do
             end do
@@ -237,10 +238,10 @@ module m_basis
         ! 4. Second Pass: Compute NURBS basis functions and their spatial derivatives
         invW  = 1.0_dp / W
         invW2 = invW * invW
-        do i = 1, pp + 1
-            i_g = span_xi - pp + i - 2
-            do j = 1, qq + 1
-                j_g = span_eta - qq + j - 2
+        do j = 1, qq + 1
+            j_g = span_eta - qq + j - 2
+            do i = 1, pp + 1
+                i_g = span_xi - pp + i - 2
                 do k = 1, rr + 1
                     k_g = span_zeta - rr + k - 2
                     loc_idx_global_cp = j_g * (Ni * Nk) + i_g * Nk + k_g + 1
