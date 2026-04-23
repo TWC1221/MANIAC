@@ -78,8 +78,8 @@ subroutine assemble_PCG_matrix(MAT_DATA, A_MAT_PCG, mesh, FE, Quad, NGRP, MATIDS
                     if (abs(w2 - w1) < 1e-10_dp) cycle
 
                     do q = 1, Quad%NoPoints
-                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, elem_coords, &
-                                        dN_dx, dN_dy, dN_dz, detJ, FE_N, FE_N_mat)
+                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, &
+                                         elem_coords, dN_dx, dN_dy, dN_dz, detJ, FE_N, FE_N_mat)
                         dV = detJ * Quad%W(q)
                         
                         do g = 1, NGRP
@@ -119,19 +119,20 @@ subroutine assemble_source_matrices_pcg(MAT_F, MAT_S, FixedSrc, mesh, FE, Quad, 
     integer, intent(in)           :: n_groups
     logical, intent(in)           :: is_adjoint
 
-    integer :: ee, g_to, g_from, i, j, q, mat_id, row, row_b, col, col_b, n_basis_patch
+    integer :: ee, g_to, g_from, i, j, k, q, mat_id, row, row_b, col, col_b, n_basis_patch
     real(dp) :: FE_N(FE%n_basis), FE_N_mat(FE%n_basis, FE%n_basis)
     integer, allocatable :: nnz(:)
-    real(dp) :: elem_coords(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV
+    real(dp) :: elem_coords(FE%n_basis, 3), dN_dx(FE%n_basis), dN_dy(FE%n_basis), dN_dz(FE%n_basis), detJ, dV
     real(dp) :: val_f, val_s, val_fixed
-    real(dp) :: u1, u2, v1, v2
+    real(dp) :: u1, u2, v1, v2, w1, w2
     real(dp) :: sigma_s_val, nusigf_val, chi_val
 
     allocate(nnz(mesh%n_nodes)); nnz = 0
     do ee = 1, mesh%n_elems
-        do i = 1, FE%n_basis
+        n_basis_patch = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee) * mesh%n_cp_zeta(ee)
+        do i = 1, n_basis_patch
             row = mesh%elems(ee, i)
-            nnz(row) = nnz(row) + FE%n_basis
+            if (row > 0) nnz(row) = nnz(row) + n_basis_patch
         end do
     end do
     do i = 1, mesh%n_nodes; nnz(i) = min(nnz(i), mesh%n_nodes); end do
@@ -154,47 +155,51 @@ subroutine assemble_source_matrices_pcg(MAT_F, MAT_S, FixedSrc, mesh, FE, Quad, 
 
     do ee = 1, mesh%n_elems
         mat_id = mesh%mats(ee)
-        n_basis_patch = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee)
-        do i = 1, FE%n_basis; elem_coords(i, :) = merge(mesh%nodes(mesh%elems(ee, i), :), 0.0_dp, mesh%elems(ee, i) > 0); end do
+        n_basis_patch = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee) * mesh%n_cp_zeta(ee)
+        do i = 1, FE%n_basis
+            if (mesh%elems(ee, i) > 0) then
+                elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
+            else
+                elem_coords(i, :) = 0.0_dp
+            end if
+        end do
         
-        do i = 1, size(mesh%knot_vectors_xi, 2) - 1
+        do i = 1, mesh%n_knots_xi_patch(ee) - 1
             u1 = mesh%knot_vectors_xi(ee, i); u2 = mesh%knot_vectors_xi(ee, i+1)
             if (abs(u2 - u1) < 1e-10_dp) cycle
-            do j = 1, size(mesh%knot_vectors_eta, 2) - 1
+            do j = 1, mesh%n_knots_eta_patch(ee) - 1
                 v1 = mesh%knot_vectors_eta(ee, j); v2 = mesh%knot_vectors_eta(ee, j+1)
                 if (abs(v2 - v1) < 1e-10_dp) cycle
+                do k = 1, mesh%n_knots_zeta_patch(ee) - 1
+                    w1 = mesh%knot_vectors_zeta(ee, k); w2 = mesh%knot_vectors_zeta(ee, k+1)
+                    if (abs(w2 - w1) < 1e-10_dp) cycle
 
-                do q = 1, Quad%NoPoints
-                    call GetMapping2D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, elem_coords, &
-                                    dN_dx, dN_dy, detJ, FE_N, FE_N_mat)
-                    dV = detJ * Quad%W(q)
-                    
-                    do g_to = 1, n_groups
-                        do row_b = 1, n_basis_patch
-                            row = mesh%elems(ee, row_b)
-                            val_fixed = mats(mat_id)%Src(g_to) * FE_N(row_b) * dV
-                            if (abs(val_fixed) > 1e-20_dp) call PCG_VEC_ALLOCATION(FixedSrc(g_to), row, val_fixed)
+                    do q = 1, Quad%NoPoints
+                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, &
+                                         elem_coords, dN_dx, dN_dy, dN_dz, detJ, FE_N, FE_N_mat)
+                        dV = detJ * Quad%W(q)
+                        
+                        do g_to = 1, n_groups
+                            do row_b = 1, n_basis_patch
+                                row = mesh%elems(ee, row_b)
+                                val_fixed = mats(mat_id)%Src(g_to) * FE_N(row_b) * dV
+                                if (abs(val_fixed) > 1e-20_dp) call PCG_VEC_ALLOCATION(FixedSrc(g_to), row, val_fixed)
 
-                            do col_b = 1, n_basis_patch
-                                col = mesh%elems(ee, col_b)
-                                do g_from = 1, n_groups
-                                    if (.not. is_adjoint) then
-                                        nusigf_val = mats(mat_id)%NuSigF(g_from); chi_val = mats(mat_id)%Chi(g_to)
-                                    else
-                                        nusigf_val = mats(mat_id)%Chi(g_from); chi_val = mats(mat_id)%NuSigF(g_to)
-                                    end if
-                                    val_f = chi_val * nusigf_val * FE_N_mat(row_b,col_b) * dV
-                                    if (abs(val_f) > 1e-20_dp) call PCG_MAT_ALLOCATION(MAT_F(g_to, g_from), row, col, val_f)
+                                do col_b = 1, n_basis_patch
+                                    col = mesh%elems(ee, col_b)
+                                    do g_from = 1, n_groups
+                                        nusigf_val = merge(mats(mat_id)%NuSigF(g_from), mats(mat_id)%Chi(g_from), .not. is_adjoint)
+                                        chi_val    = merge(mats(mat_id)%Chi(g_to), mats(mat_id)%NuSigF(g_to), .not. is_adjoint)
+                                        
+                                        val_f = chi_val * nusigf_val * FE_N_mat(row_b,col_b) * dV
+                                        if (abs(val_f) > 1e-20_dp) call PCG_MAT_ALLOCATION(MAT_F(g_to, g_from), row, col, val_f)
 
-                                    if (g_from /= g_to) then
-                                        if (.not. is_adjoint) then
-                                            sigma_s_val = mats(mat_id)%SigmaS(g_from, g_to)
-                                        else
-                                            sigma_s_val = mats(mat_id)%SigmaS(g_to, g_from)
+                                        if (g_from /= g_to) then
+                                            sigma_s_val = merge(mats(mat_id)%SigmaS(g_from, g_to), mats(mat_id)%SigmaS(g_to, g_from), .not. is_adjoint)
+                                            val_s = sigma_s_val * FE_N_mat(row_b,col_b) * dV
+                                            if (abs(val_s) > 1e-20_dp) call PCG_MAT_ALLOCATION(MAT_S(g_to, g_from), row, col, val_s)
                                         end if
-                                        val_s = sigma_s_val * FE_N_mat(row_b,col_b) * dV
-                                        if (abs(val_s) > 1e-20_dp) call PCG_MAT_ALLOCATION(MAT_S(g_to, g_from), row, col, val_s)
-                                    end if
+                                    end do
                                 end do
                             end do
                         end do
@@ -402,8 +407,8 @@ subroutine calculate_total_production_pcg(total_prod, X_PCG, mesh, FE, Quad, mat
                     if (abs(w2 - w1) < 1e-10_dp) cycle
 
                     do q = 1, Quad%NoPoints
-                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, elem_coords, &
-                                        dN_dx, dN_dy, dN_dz, detJ, FE_N)
+                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, &
+                                         elem_coords, dN_dx, dN_dy, dN_dz, detJ, FE_N)
                         dV = detJ * Quad%W(q)
                         
                         fission_rate_at_q = 0.0_dp
@@ -455,8 +460,8 @@ subroutine calculate_mesh_volume(total_vol, mat_vols, mesh, FE, Quad)
                     if (abs(w2 - w1) < 1e-10_dp) cycle
 
                     do q = 1, Quad%NoPoints
-                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, elem_coords, &
-                                        dN_dx, dN_dy, dN_dz, detJ, FE_N)
+                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, &
+                                         elem_coords, dN_dx, dN_dy, dN_dz, detJ, FE_N)
                         dV = detJ * Quad%W(q)
                         total_vol = total_vol + dV
                         if (mat_id > 0) mat_vols(mat_id) = mat_vols(mat_id) + dV

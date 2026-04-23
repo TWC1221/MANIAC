@@ -1,58 +1,27 @@
-# cmake_minimum_required(VERSION 3.1)
-# project(neutron_code LANGUAGES Fortran C)
-
-# set(CMAKE_BUILD_TYPE "Debug")
-
-# set(PETSC_INCLUDES "/usr/lib/petsc/include")
-# set(PETSC_LIBS "/usr/lib/petsc/lib/libpetsc.so")
-
-# set(CMAKE_Fortran_FLAGS "-Wall -ffree-line-length-none -I${PETSC_INCLUDES}")
-# set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -pg -Og -fopenmp")
-
-# set(CMAKE_Fortran_MODULE_DIRECTORY ${CMAKE_BINARY_DIR}/fortran_mods)
-# file(MAKE_DIRECTORY ${CMAKE_Fortran_MODULE_DIRECTORY})
-
-# add_library(src STATIC
-#     src/m_constants.F90
-#     src/m_types.F90
-#     src/m_quadrature.F90
-#     src/m_petsc.F90
-#     src/m_PCG.F90
-#     src/m_GMSH.F90
-#     src/m_finite_elements.F90
-#     src/m_material.F90
-#     src/m_outpVTK.F90
-#     src/m_boundaries.F90
-# )
-
-# set_target_properties(src PROPERTIES Fortran_PREPROCESS ON)
-
-# add_executable(2Diffusion 2D_V1.1.F90)
-# #add_executable(exe VTK_Extractor_V2.0.F90)
-# set_target_properties(2Diffusion PROPERTIES Fortran_PREPROCESS ON)
-
-# target_link_libraries(2Diffusion src ${PETSC_LIBS} lapack blas)
-
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.15)
 project(neutron_code LANGUAGES Fortran C)
 
-set(CMAKE_BUILD_TYPE "Debug")
-
-# 1. HARD-CODED PATHS (Matching your Ubuntu /usr/lib/petsc layout)
-set(PETSC_DIR "/usr/lib/petsc")
-set(PETSC_INC "${PETSC_DIR}/include")
-set(PETSC_LIB_DIR "${PETSC_DIR}/lib")
-
-# 2. COMPILER FLAGS
-# We add the include path here and also tell the linker where the libraries live
-set(CMAKE_Fortran_FLAGS "-Wall -ffree-line-length-none -I${PETSC_INC}")
-set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -pg -Og -fopenmp")
-set(CMAKE_EXE_LINKER_FLAGS "-L${PETSC_LIB_DIR} -Wl,-rpath,${PETSC_LIB_DIR}")
-
+set(CMAKE_BUILD_TYPE Debug)
 set(CMAKE_Fortran_MODULE_DIRECTORY ${CMAKE_BINARY_DIR}/fortran_mods)
-file(MAKE_DIRECTORY ${CMAKE_Fortran_MODULE_DIRECTORY})
 
-# 3. STATIC LIBRARY (Modules)
+# ---- FIND MPI ----
+find_package(MPI REQUIRED)
+
+# ---- MANUALLY SET PETSC (Homebrew Fix) ----
+set(PETSC_DIR "/opt/homebrew/opt/petsc")
+set(PETSC_INCLUDES "${PETSC_DIR}/include")
+# This finds the actual library file in the Homebrew directory
+find_library(PETSC_LIB NAMES petsc PATHS "${PETSC_DIR}/lib" NO_DEFAULT_PATH)
+
+if(NOT PETSC_LIB)
+    message(FATAL_ERROR "PETSc library not found in ${PETSC_DIR}/lib")
+endif()
+
+# ---- COMPILER FLAGS ----
+set(CMAKE_Fortran_FLAGS "-Wall -ffree-line-length-none")
+set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -Og")
+
+# ---- LIBRARY ----
 add_library(src STATIC
     src/m_constants.F90
     src/m_types.F90
@@ -65,20 +34,24 @@ add_library(src STATIC
     src/m_outpVTK.F90
     src/m_boundaries.F90
 )
+
+target_include_directories(src PRIVATE ${PETSC_INCLUDES} ${MPI_Fortran_INCLUDE_DIRS})
 set_target_properties(src PROPERTIES Fortran_PREPROCESS ON)
 
-# 4. EXECUTABLE
+# ---- EXECUTABLE ----
 add_executable(3DIGA 3D_V1.0.F90)
 set_target_properties(3DIGA PROPERTIES Fortran_PREPROCESS ON)
 
-# 5. THE LINKING FIX
-target_link_libraries(3DIGA 
-    src 
-    petsc 
-    mpifort 
-    mpi 
-    lapack 
-    blas 
-    m 
-    dl
+# ADD THIS LINE: Tells the compiler where to find <petsc/finclude/...>
+target_include_directories(3DIGA PRIVATE ${PETSC_INCLUDES} ${MPI_Fortran_INCLUDE_DIRS})
+
+# ---- LINKING ----
+# On macOS, we use the Accelerate framework for LAPACK/BLAS
+find_library(LAPACK_LIB Accelerate)
+
+target_link_libraries(3DIGA
+    src
+    MPI::MPI_Fortran
+    ${PETSC_LIB}
+    ${LAPACK_LIB}
 )

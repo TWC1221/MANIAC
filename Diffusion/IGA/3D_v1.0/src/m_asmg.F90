@@ -55,18 +55,15 @@ contains
             else if (index(line, 'KnotVector') > 0) then
                 pos = index(line, ':')
                 if (pos == 0) then
-                    if (index(line, 'KnotVectorXi') > 0) then
-                        pos = index(line, 'KnotVectorXi') + 11
-                    else if (index(line, 'KnotVectorEta') > 0) then
-                        pos = index(line, 'KnotVectorEta') + 12
-                    else if (index(line, 'KnotVectorZeta') > 0) then
-                        pos = index(line, 'KnotVectorZeta') + 13
-                    else
-                        pos = index(line, 'KnotVector') + 9
-                    end if
+                    ! If no colon, find the end of the keyword to start reading the integer
+                    if (index(line, 'KnotVectorXi') > 0)   pos = index(line, 'KnotVectorXi') + 12
+                    if (index(line, 'KnotVectorEta') > 0)  pos = index(line, 'KnotVectorEta') + 13
+                    if (index(line, 'KnotVectorZeta') > 0) pos = index(line, 'KnotVectorZeta') + 14
+                    if (pos == 0) pos = index(line, 'KnotVector') + 10
                 end if
-                read(line(pos+1:), *, iostat=iostatus) k
-                if (iostatus == 0 .and. k > max_knots) max_knots = k
+                ! Read the count after the colon or keyword
+                read(line(pos+1:), *, iostat=ios) k
+                if (ios == 0 .and. k > max_knots) max_knots = k
             end if
         end do
         mesh%n_elems = patch_count
@@ -123,7 +120,7 @@ contains
             else if (index(line, '$2D_Patch_Description_Start') > 0) then
                 i = i + 1
                 call parse_patch_block(unit, mesh%edges(i,:), mesh%edge_mats(i), n_cp=mesh%n_cp_edge(i), &
-                                     out_knots_xi=mesh%edge_knots_xi(i,:), out_knots_eta=mesh%edge_knots_eta(i,:), &
+                                     p_order=poly_order, out_knots_xi=mesh%edge_knots_xi(i,:), out_knots_eta=mesh%edge_knots_eta(i,:), &
                                      n_k_xi=mesh%n_knots_xi_edge(i), n_k_eta=mesh%n_knots_eta_edge(i), &
                                      n_cp_xi=mesh%n_cp_xi_edge(i), n_cp_eta=mesh%n_cp_eta_edge(i))
                 ! Sync fallback for 1D
@@ -132,7 +129,7 @@ contains
 
             else if (index(line, '$3D_Patch_Description_Start') > 0) then
                 j = j + 1
-                call parse_patch_block(unit, mesh%elems(j,:), mesh%mats(j), &
+                call parse_patch_block(unit, mesh%elems(j,:), mesh%mats(j), p_order=poly_order, &
                                      out_knots_xi=mesh%knot_vectors_xi(j,:), out_knots_eta=mesh%knot_vectors_eta(j,:), out_knots_zeta=mesh%knot_vectors_zeta(j,:), &
                                      n_k_xi=mesh%n_knots_xi_patch(j), n_k_eta=mesh%n_knots_eta_patch(j), n_k_zeta=mesh%n_knots_zeta_patch(j), &
                                      n_cp_xi=mesh%n_cp_xi(j), n_cp_eta=mesh%n_cp_eta(j), n_cp_zeta=mesh%n_cp_zeta(j))
@@ -145,14 +142,15 @@ contains
 
     end subroutine read_asmg_mesh
 
-    subroutine parse_patch_block(u, out_cp, out_id2, n_cp, out_knots_xi, out_knots_eta, out_knots_zeta, n_k_xi, n_k_eta, n_k_zeta, n_cp_xi, n_cp_eta, n_cp_zeta)
+    subroutine parse_patch_block(u, out_cp, out_id2, p_order, n_cp, out_knots_xi, out_knots_eta, out_knots_zeta, n_k_xi, n_k_eta, n_k_zeta, n_cp_xi, n_cp_eta, n_cp_zeta)
         integer, intent(in) :: u
         integer, intent(inout) :: out_cp(:)
         integer, intent(out)   :: out_id2
+        integer, intent(in)    :: p_order
         integer, intent(out), optional :: n_cp, n_cp_xi, n_cp_eta, n_cp_zeta
         real(dp), intent(inout), optional :: out_knots_xi(:), out_knots_eta(:), out_knots_zeta(:)
         integer, intent(out), optional :: n_k_xi, n_k_eta, n_k_zeta
-        
+        real(dp), allocatable :: tmp_knots(:)
         character(len=1024) :: l
         integer :: ios, n_val, m, pos, val1, val2, val3
         
@@ -182,31 +180,46 @@ contains
                 read(l(pos:), *, iostat=ios) val1, val2, val3
                 if (ios /= 0) then
                     read(l(pos:), *, iostat=ios) val1, val2
-                    if (ios /= 0) read(l(pos:), *, iostat=ios) val1
+                    if (ios /= 0) then 
+                        read(l(pos:), *, iostat=ios) val1
+                    end if
                 end if
-                n_val = val1 * val2 * val3
+                n_val = merge(val1 * val2 * val3, val1, val2 > 0 .and. val3 > 0)
+                if (present(n_cp)) n_cp = n_val
 
-                if (present(n_cp_xi))   n_cp_xi   = val1
-                if (present(n_cp_eta))  n_cp_eta  = val2
-                if (present(n_cp_zeta)) n_cp_zeta = val3
-                if (present(n_cp))      n_cp = n_val
-                
                 ! Consume the control point IDs
                 read(u, *, iostat=ios) (out_cp(m), m=1, n_val)
                 if (ios == 0) out_cp(1:n_val) = out_cp(1:n_val) + 1
 
-            else if (index(l, 'KnotVector') > 0 .and. present(out_knots_xi)) then
+            else if (index(l, 'KnotVector') > 0) then
                 pos = index(l, ':')
                 if (pos == 0) pos = index(l, 'KnotVector') + 9
                 read(l(pos+1:), *, iostat=ios) n_val
                 if (ios == 0 .and. n_val > 0) then
-                    read(u, *, iostat=ios) (out_knots_xi(m), m=1, n_val)
-                    n_k_xi = n_val
-                    if (present(n_k_eta)) n_k_eta = n_val
-                    if (present(n_k_zeta)) n_k_zeta = n_val
-
-                    if (present(out_knots_eta)) out_knots_eta(1:n_val) = out_knots_xi(1:n_val)
-                    if (present(out_knots_zeta)) out_knots_zeta(1:n_val) = out_knots_xi(1:n_val)
+                    allocate(tmp_knots(n_val))
+                    read(u, *, iostat=ios) tmp_knots
+                    if (ios == 0) then
+                        ! Dimension-specific parsing to prevent overwriting
+                        if (index(l, 'Xi') > 0) then
+                            if (present(out_knots_xi)) out_knots_xi(1:n_val) = tmp_knots
+                            if (present(n_k_xi)) n_k_xi = n_val; if (present(n_cp_xi)) n_cp_xi = n_val - p_order - 1
+                        else if (index(l, 'Eta') > 0) then
+                            if (present(out_knots_eta)) out_knots_eta(1:n_val) = tmp_knots
+                            if (present(n_k_eta)) n_k_eta = n_val; if (present(n_cp_eta)) n_cp_eta = n_val - p_order - 1
+                        else if (index(l, 'Zeta') > 0) then
+                            if (present(out_knots_zeta)) out_knots_zeta(1:n_val) = tmp_knots
+                            if (present(n_k_zeta)) n_k_zeta = n_val; if (present(n_cp_zeta)) n_cp_zeta = n_val - p_order - 1
+                        else
+                            ! Generic 'KnotVector' tag - distribute to all active directions
+                            if (present(out_knots_xi))   out_knots_xi(1:n_val)   = tmp_knots
+                            if (present(out_knots_eta))  out_knots_eta(1:n_val)  = tmp_knots
+                            if (present(out_knots_zeta)) out_knots_zeta(1:n_val) = tmp_knots
+                            if (present(n_k_xi)) n_k_xi = n_val; if (present(n_cp_xi)) n_cp_xi = n_val - p_order - 1
+                            if (present(n_k_eta)) n_k_eta = n_val; if (present(n_cp_eta)) n_cp_eta = n_val - p_order - 1
+                            if (present(n_k_zeta)) n_k_zeta = n_val; if (present(n_cp_zeta)) n_cp_zeta = n_val - p_order - 1
+                        end if
+                    end if
+                    deallocate(tmp_knots)
                 end if
             end if
         end do
@@ -265,14 +278,6 @@ contains
                   pack(mesh%edge_knots(i,:), mesh%edge_knots(i,:) /= 0.0_dp)
         end do
         close(u)
-
-        print*, mesh%n_elems, " elements, ", mesh%n_nodes, " nodes, ", mesh%n_edges, " edges read and exported to ../output/"
-        print*, mesh%n_cp_xi, " control points in Xi direction (max), ", mesh%n_cp_eta, " in Eta direction (max), ", mesh%n_cp_zeta, " in Zeta direction (max)"
-        print*, mesh%n_knots_xi_patch, " knots in Xi direction (max), ", mesh%n_knots_eta_patch, " in Eta direction (max), ", mesh%n_knots_zeta_patch, " in Zeta direction (max)"
-        print*, mesh%n_cp_xi_edge, " control points in Xi direction for edges (max), ", mesh%n_cp_eta_edge, " in Eta direction for edges (max)"
-        print*, mesh%n_knots_xi_edge, " knots in Xi direction for edges (max), ", mesh%n_knots_eta_edge, " in Eta direction for edges (max)"
-        print*, mesh%n_cp_edge, " control points for edges (max), ", mesh%n_knots_edge, " knots for edges (max)"
-        print*, "Polynomial order: ", mesh%order
     end subroutine write_mesh_to_files
 
 end module m_asmg

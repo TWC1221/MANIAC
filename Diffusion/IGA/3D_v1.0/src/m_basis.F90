@@ -39,9 +39,11 @@ module m_basis
         real(dp), intent(out)        :: detJ, R(:)
         real(dp), optional, intent(out) :: R_mat(:,:)
 
-        real(dp) :: J(2,2), invJ(2,2), dRdXiEta(2, size(R)), detJ_param
+        real(dp) :: J(2,3), dRdXiEta(2, size(R)), detJ_param
+        real(dp) :: g1(3), g2(3), g11, g22, g12
         real(dp) :: dR_dxi(size(R)), dR_deta(size(R))
         real(dp) :: xi, eta
+        integer  :: n_en
 
         ! Map from reference [-1,1] to knot span [u1, u2]
         xi = 0.5_dp * ((u2 - u1) * Quad%Xi(qq) + (u2 + u1))
@@ -51,24 +53,21 @@ module m_basis
         ! Evaluate NURBS basis functions and parametric derivatives
         call EvalNURBS2D(FE, ee, mesh, xi, eta, R, dR_dxi, dR_deta)
 
+        n_en = size(R)
+        dN_dx = 0.0_dp
+        dN_dy = 0.0_dp
+
         ! Physical mapping Jacobian
         dRdXiEta(1, :) = dR_dxi
         dRdXiEta(2, :) = dR_deta
         J = matmul(dRdXiEta, elem_coords)
 
-        detJ = (J(1,1)*J(2,2) - J(1,2)*J(2,1)) * detJ_param
+        ! For 3D boundaries, detJ is the magnitude of the normal vector (surface area element)
+        g1 = J(1,:); g2 = J(2,:)
+        g11 = dot_product(g1, g1); g22 = dot_product(g2, g2); g12 = dot_product(g1, g2)
+        detJ = sqrt(max(0.0_dp, g11*g22 - g12**2)) * detJ_param
 
-        if (abs(detJ) < 1e-15_dp) detJ = 1e-15_dp
-
-        invJ(1,1) =  J(2,2) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
-        invJ(1,2) = -J(1,2) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
-        invJ(2,1) = -J(2,1) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
-        invJ(2,2) =  J(1,1) / (J(1,1)*J(2,2) - J(1,2)*J(2,1))
-
-        dN_dx = invJ(1,1) * dR_dxi + invJ(1,2) * dR_deta
-        dN_dy = invJ(2,1) * dR_dxi + invJ(2,2) * dR_deta
-
-        if (present(R_mat)) R_mat = spread(R, dim=2, ncopies=FE%n_basis) * spread(R, dim=1, ncopies=FE%n_basis)
+        if (present(R_mat)) R_mat = spread(R, dim=2, ncopies=n_en) * spread(R, dim=1, ncopies=n_en)
     end subroutine GetMapping2D
 
     subroutine GetMapping3D(FE, ee, mesh, qq, Quad, u1, u2, v1, v2, w1, w2, elem_coords, dN_dx, dN_dy, dN_dz, detJ, R, R_mat)
@@ -86,6 +85,7 @@ module m_basis
         real(dp) :: J(3,3), invJ(3,3), dRdXiEtaZeta(3, size(R)), detJ_param, detJ_phys
         real(dp) :: dR_dxi(size(R)), dR_deta(size(R)), dR_dzeta(size(R))
         real(dp) :: xi, eta, zeta
+        integer  :: n_en
 
         xi   = 0.5_dp * ((u2 - u1) * Quad%Xi(qq)  + (u2 + u1))
         eta  = 0.5_dp * ((v2 - v1) * Quad%Eta(qq) + (v2 + v1))
@@ -93,6 +93,9 @@ module m_basis
         detJ_param = 0.125_dp * (u2 - u1) * (v2 - v1) * (w2 - w1)
 
         call EvalNURBS3D(FE, ee, mesh, xi, eta, zeta, R, dR_dxi, dR_deta, dR_dzeta)
+
+        n_en = size(R)
+        dN_dx = 0.0_dp; dN_dy = 0.0_dp; dN_dz = 0.0_dp
 
         dRdXiEtaZeta(1, :) = dR_dxi
         dRdXiEtaZeta(2, :) = dR_deta
@@ -102,8 +105,6 @@ module m_basis
         detJ_phys = (J(1,1)*(J(2,2)*J(3,3)-J(2,3)*J(3,2)) - &
                      J(1,2)*(J(2,1)*J(3,3)-J(2,3)*J(3,1)) + &
                      J(1,3)*(J(2,1)*J(3,2)-J(2,2)*J(3,1)))
-
-        if (abs(detJ_phys) < 1e-15_dp) detJ_phys = 1e-15_dp
 
         invJ(1,1) = (J(2,2)*J(3,3)-J(2,3)*J(3,2))/detJ_phys
         invJ(1,2) = (J(1,3)*J(3,2)-J(1,2)*J(3,3))/detJ_phys
@@ -115,13 +116,14 @@ module m_basis
         invJ(3,2) = (J(1,2)*J(3,1)-J(1,1)*J(3,2))/detJ_phys
         invJ(3,3) = (J(1,1)*J(2,2)-J(1,2)*J(2,1))/detJ_phys
 
-        dN_dx = invJ(1,1) * dR_dxi + invJ(2,1) * dR_deta + invJ(3,1) * dR_dzeta
-        dN_dy = invJ(1,2) * dR_dxi + invJ(2,2) * dR_deta + invJ(3,2) * dR_dzeta
-        dN_dz = invJ(1,3) * dR_dxi + invJ(2,3) * dR_deta + invJ(3,3) * dR_dzeta
+        ! Apply Chain Rule across the full basis
+        dN_dx = invJ(1,1) * dR_dxi + invJ(1,2) * dR_deta + invJ(1,3) * dR_dzeta
+        dN_dy = invJ(2,1) * dR_dxi + invJ(2,2) * dR_deta + invJ(2,3) * dR_dzeta
+        dN_dz = invJ(3,1) * dR_dxi + invJ(3,2) * dR_deta + invJ(3,3) * dR_dzeta
 
         detJ = detJ_phys * detJ_param
 
-        if (present(R_mat)) R_mat = spread(R, dim=2, ncopies=FE%n_basis) * spread(R, dim=1, ncopies=FE%n_basis)
+        if (present(R_mat)) R_mat = spread(R, dim=2, ncopies=n_en) * spread(R, dim=1, ncopies=n_en)
     end subroutine GetMapping3D
 
     subroutine EvalNURBS2D(FE, ee, mesh, xi, eta, R, dR_dxi, dR_deta)
@@ -130,41 +132,51 @@ module m_basis
         type(t_mesh), intent(in) :: mesh
         real(dp), intent(in) :: xi, eta 
         real(dp), intent(out) :: R(:), dR_dxi(:), dR_deta(:)
-        integer :: pp, qq, span_xi, span_eta, i, j, idx
+        integer :: pp, qq, span_xi, span_eta, i, j, node_id, Ni, Nj, loc_idx_global_cp, i_g, j_g
         real(dp) :: dN_xi(2, FE%p_order+1), dN_eta(2, FE%q_order+1)
         real(dp) :: W, dW_dxi, dW_deta, w_ij
         real(dp) :: invW, invW2
 
         pp = FE%p_order; qq = FE%q_order
+        Ni = mesh%n_cp_xi_edge(ee) ! Control points in Xi
+        Nj = mesh%n_cp_eta_edge(ee) ! Control points in Eta
+
+        ! Initialize outputs
         R = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp
 
-        call FindSpan(mesh%n_cp_xi(ee)-1, pp, xi, mesh%knot_vectors_xi(ee, :), span_xi)
-        call FindSpan(mesh%n_cp_eta(ee)-1, qq, eta, mesh%knot_vectors_eta(ee, :), span_eta)
-        call DersBasisFuns(span_xi, xi, pp, 1, mesh%knot_vectors_xi(ee, :), dN_xi)
-        call DersBasisFuns(span_eta, eta, qq, 1, mesh%knot_vectors_eta(ee, :), dN_eta)
+        call FindSpan(Ni-1, pp, xi, mesh%edge_knots_xi(ee,:), span_xi)
+        call FindSpan(Nj-1, qq, eta, mesh%edge_knots_eta(ee,:), span_eta)
+        call DersBasisFuns(span_xi, xi, pp, 1, mesh%edge_knots_xi(ee,:), dN_xi)
+        call DersBasisFuns(span_eta, eta, qq, 1, mesh%edge_knots_eta(ee,:), dN_eta)
 
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp
         do j = 1, qq + 1
+            j_g = span_eta - qq + j - 1 ! 0-indexed global basis function index for Eta
             do i = 1, pp + 1
-                !print*,span_eta, qq, j, mesh%n_cp_xi(ee), span_xi, pp, i
-                idx = (span_eta - qq + j - 2) * mesh%n_cp_xi(ee) + (span_xi - pp + i - 1)
-                w_ij = mesh%weights(mesh%elems(ee, idx))
+                i_g = span_xi - pp + i - 1 ! 0-indexed global basis function index for Xi
+                loc_idx_global_cp = j_g * Ni + i_g + 1
+                node_id = mesh%edges(ee, loc_idx_global_cp)
+                w_ij = mesh%weights(node_id)
+                
                 W = W + dN_xi(1, i) * dN_eta(1, j) * w_ij
                 dW_dxi = dW_dxi + dN_xi(2, i) * dN_eta(1, j) * w_ij
                 dW_deta = dW_deta + dN_xi(1, i) * dN_eta(2, j) * w_ij
             end do
         end do
-
+        if (abs(W) < 1e-16_dp) W = 1.0_dp
         invW = 1.0_dp / W
         invW2 = invW * invW
 
         do j = 1, qq + 1
+            j_g = span_eta - qq + j - 1
             do i = 1, pp + 1
-                idx = (span_eta - qq + j - 2) * mesh%n_cp_xi(ee) + (span_xi - pp + i - 1)
-                w_ij = mesh%weights(mesh%elems(ee, idx))
-                R(idx) = (dN_xi(1, i) * dN_eta(1, j) * w_ij) * invW
-                dR_dxi(idx) = ( (dN_xi(2, i) * dN_eta(1, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_dxi ) * invW2
-                dR_deta(idx) = ( (dN_xi(1, i) * dN_eta(2, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_deta ) * invW2
+                i_g = span_xi - pp + i - 1
+                loc_idx_global_cp = j_g * Ni + i_g + 1
+                node_id = mesh%edges(ee, loc_idx_global_cp)
+                w_ij = merge(mesh%weights(node_id), 1.0_dp, node_id > 0)
+                R(loc_idx_global_cp) = (dN_xi(1, i) * dN_eta(1, j) * w_ij) * invW
+                dR_dxi(loc_idx_global_cp) = ( (dN_xi(2, i) * dN_eta(1, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_dxi ) * invW2
+                dR_deta(loc_idx_global_cp) = ( (dN_xi(1, i) * dN_eta(2, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_deta ) * invW2
             end do
         end do
     end subroutine EvalNURBS2D
@@ -176,8 +188,8 @@ module m_basis
         real(dp), intent(in)       :: xi, eta, zeta
         real(dp), intent(out)      :: R(:), dR_dxi(:), dR_deta(:), dR_dzeta(:)
         
-        integer :: pp, qq, rr, span_xi, span_eta, span_zeta, i, j, k, idx, node_id, i_g, j_g, k_g
-        integer :: Ni, Nj, Nk
+        integer :: pp, qq, rr, span_xi, span_eta, span_zeta, i, j, k, node_id
+        integer :: Ni, Nj, Nk, loc_idx_global_cp, j_g, i_g, k_g
         real(dp) :: dN_xi(2, FE%p_order+1), dN_eta(2, FE%q_order+1), dN_zeta(2, FE%r_order+1)
         real(dp) :: W, dW_dxi, dW_deta, dW_dzeta, w_ijk, Ri_num
         real(dp) :: invW, invW2
@@ -186,39 +198,37 @@ module m_basis
         Ni = mesh%n_cp_xi(ee)
         Nj = mesh%n_cp_eta(ee)
         Nk = mesh%n_cp_zeta(ee)
-        
+
         ! Initialize outputs
         R = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp; dR_dzeta = 0.0_dp
 
         ! 1. Find the knot spans
-        call FindSpan(Ni-1, pp, xi,   mesh%knot_vectors_xi(ee, :),   span_xi)
-        call FindSpan(Nj-1, qq, eta,  mesh%knot_vectors_eta(ee, :),  span_eta)
-        call FindSpan(Nk-1, rr, zeta, mesh%knot_vectors_zeta(ee, :), span_zeta)
+        call FindSpan(Ni-1, pp, xi,   mesh%knot_vectors_xi(ee,:),   span_xi)
+        call FindSpan(Nj-1, qq, eta,  mesh%knot_vectors_eta(ee,:),  span_eta)
+        call FindSpan(Nk-1, rr, zeta, mesh%knot_vectors_zeta(ee,:), span_zeta)
 
         ! 2. Evaluate B-spline basis functions and their 1st derivatives
-        call DersBasisFuns(span_xi,   xi,   pp, 1, mesh%knot_vectors_xi(ee, :),   dN_xi)
-        call DersBasisFuns(span_eta,  eta,  qq, 1, mesh%knot_vectors_eta(ee, :),  dN_eta)
-        call DersBasisFuns(span_zeta, zeta, rr, 1, mesh%knot_vectors_zeta(ee, :), dN_zeta)
+        call DersBasisFuns(span_xi,   xi,   pp, 1, mesh%knot_vectors_xi(ee,:),   dN_xi)
+        call DersBasisFuns(span_eta,  eta,  qq, 1, mesh%knot_vectors_eta(ee,:),  dN_eta)
+        call DersBasisFuns(span_zeta, zeta, rr, 1, mesh%knot_vectors_zeta(ee,:), dN_zeta)
 
         ! 3. First Pass: Compute the NURBS denominator (W) and its derivatives
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp; dW_dzeta = 0.0_dp
         
-        do k = 1, rr + 1
-            k_g = span_zeta - rr + k - 1
+        do i = 1, pp + 1
+            i_g = span_xi - pp + i - 2
             do j = 1, qq + 1
-                j_g = span_eta - qq + j - 1
-                do i = 1, pp + 1
-                    i_g = span_xi - pp + i - 1
-                    
-                    idx = (k_g - 1) * (Ni * Nj) + (j_g - 1) * Ni + i_g
-                    
-                    node_id = mesh%elems(ee, idx)
+                j_g = span_eta - qq + j - 2
+                do k = 1, rr + 1
+                    k_g = span_zeta - rr + k - 2
+                    loc_idx_global_cp = j_g * (Ni * Nk) + i_g * Nk + k_g + 1
+
+                    node_id = mesh%elems(ee, loc_idx_global_cp)
+
                     w_ijk = merge(mesh%weights(node_id), 1.0_dp, node_id > 0)
 
-                    ! Weight-averaged summation
                     W        = W        + dN_xi(1, i) * dN_eta(1, j) * dN_zeta(1, k) * w_ijk
                     dW_dxi   = dW_dxi   + dN_xi(2, i) * dN_eta(1, j) * dN_zeta(1, k) * w_ijk
-                    dW_deta  = dW_deta  + dN_xi(1, i) * dN_eta(2, j) * dN_zeta(1, k) * w_ijk
                     dW_dzeta = dW_dzeta + dN_xi(1, i) * dN_eta(1, j) * dN_zeta(2, k) * w_ijk
                 end do
             end do
@@ -227,33 +237,21 @@ module m_basis
         ! 4. Second Pass: Compute NURBS basis functions and their spatial derivatives
         invW  = 1.0_dp / W
         invW2 = invW * invW
-        
-        do k = 1, rr + 1
-            k_g = span_zeta - rr + k - 1
+        do i = 1, pp + 1
+            i_g = span_xi - pp + i - 2
             do j = 1, qq + 1
-                j_g = span_eta - qq + j - 1
-                do i = 1, pp + 1
-                    i_g = span_xi - pp + i - 1
-
-                    idx = (k_g - 1) * (Ni * Nj) + (j_g - 1) * Ni + i_g
-
-                    w_ijk = mesh%weights(mesh%elems(ee, idx))
-
-                    ! NURBS Numerator for this specific basis function
+                j_g = span_eta - qq + j - 2
+                do k = 1, rr + 1
+                    k_g = span_zeta - rr + k - 2
+                    loc_idx_global_cp = j_g * (Ni * Nk) + i_g * Nk + k_g + 1
+                    node_id = mesh%elems(ee, loc_idx_global_cp)
+                    w_ijk = merge(mesh%weights(node_id), 1.0_dp, node_id > 0)
+                    
                     Ri_num = dN_xi(1, i) * dN_eta(1, j) * dN_zeta(1, k) * w_ijk
-                    
-                    ! Rational Basis Function
-                    R(idx) = Ri_num * invW
-                    
-                    ! Rational Derivatives (Quotient Rule)
-                    dR_dxi(idx) = ((dN_xi(2, i) * dN_eta(1, j) * dN_zeta(1, k) * w_ijk) * W - &
-                                         Ri_num * dW_dxi) * invW2
-                                         
-                    dR_deta(idx) = ((dN_xi(1, i) * dN_eta(2, j) * dN_zeta(1, k) * w_ijk) * W - &
-                                          Ri_num * dW_deta) * invW2
-                                          
-                    dR_dzeta(idx) = ((dN_xi(1, i) * dN_eta(1, j) * dN_zeta(2, k) * w_ijk) * W - &
-                                           Ri_num * dW_dzeta) * invW2
+                    R(loc_idx_global_cp) = Ri_num * invW
+                    dR_dxi(loc_idx_global_cp) = ((dN_xi(2, i) * dN_eta(1, j) * dN_zeta(1, k) * w_ijk) * W - Ri_num * dW_dxi) * invW2
+                    dR_deta(loc_idx_global_cp) = ((dN_xi(1, i) * dN_eta(2, j) * dN_zeta(1, k) * w_ijk) * W - Ri_num * dW_deta) * invW2
+                    dR_dzeta(loc_idx_global_cp) = ((dN_xi(1, i) * dN_eta(1, j) * dN_zeta(2, k) * w_ijk) * W - Ri_num * dW_dzeta) * invW2
                 end do
             end do
         end do
@@ -265,6 +263,9 @@ module m_basis
         real(dp), intent(in) :: u, UU(:)
         integer, intent(out) :: span
         integer :: low, high, mid
+
+        ! Safety check to prevent out-of-bounds access if Ni was read incorrectly
+        if (n + 2 > size(UU)) then; span = pp + 1; return; end if
 
         if (u >= UU(n+2)) then
             span = n + 1

@@ -87,20 +87,25 @@ subroutine PETSC_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
     integer  :: ii, jj, gp, node_id, ncp, i_span, j_span, row_idx, row_b, col_b
     real(dp) :: beta, detJ2D, u1, u2, v1, v2, xi, eta, dV
     real(dp) :: R(FE%n_basis), dR_dxi(FE%n_basis), dR_deta(FE%n_basis)
-    real(dp) :: J(3,2), g_metric(2,2)
+    real(dp) :: elem_coords(FE%n_basis, 3), dN_dx(FE%n_basis), dN_dy(FE%n_basis)
     PetscInt, allocatable :: edge_nodes(:)
-    PetscScalar, allocatable :: vals(:)
+    PetscScalar, allocatable :: vals_local_buffer(:) ! Local buffer for MatSetValues
     PetscErrorCode :: ierr
 
     beta = 0.5_dp * (1.0_dp - alpha) / (1.0_dp + alpha)
     
-    allocate(edge_nodes(FE%n_basis), vals(FE%n_basis * FE%n_basis))
+    allocate(edge_nodes(FE%n_basis), vals_local_buffer(FE%n_basis * FE%n_basis))
 
     do ii = 1, mesh%n_edges
         if (mesh%edge_mats(ii) == target_id) then
             ncp = mesh%n_cp_edge(ii)
-            
-            vals(1:ncp*ncp) = 0.0_dp
+            elem_coords = 0.0_dp
+            do jj = 1, ncp
+                node_id = mesh%edges(ii, jj)
+                if (node_id > 0) elem_coords(jj, :) = mesh%nodes(node_id, :)
+            end do
+
+            vals_local_buffer = 0.0_dp
             do jj = 1, ncp
                 edge_nodes(jj) = mesh%edges(ii, jj) - 1
             end do
@@ -112,34 +117,25 @@ subroutine PETSC_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)
                     v1 = mesh%edge_knots_eta(ii, j_span); v2 = mesh%edge_knots_eta(ii, j_span+1)
                     if (v2 - v1 < 1e-10_dp) cycle
                     do gp = 1, QuadBound%NoPoints
-                        xi  = 0.5_dp * ((u2 - u1) * QuadBound%Xi(gp) + (u2 + u1))
-                        eta = 0.5_dp * ((v2 - v1) * QuadBound%Eta(gp) + (v2 + v1))
-                        call EvalNURBS2D(FE, ii, mesh, xi, eta, R, dR_dxi, dR_deta)
+                        call GetMapping2D(FE, ii, mesh, gp, QuadBound, u1, u2, v1, v2, elem_coords, dN_dx, dN_dy, detJ2D, R)
+                        
+                        dV = detJ2D * QuadBound%W(gp) * beta
 
-                        J = 0.0_dp
-                        do row_idx = 1, ncp
-                            node_id = mesh%edges(ii, row_idx)
-                            J(:,1) = J(:,1) + mesh%nodes(node_id, :) * dR_dxi(row_idx)
-                            J(:,2) = J(:,2) + mesh%nodes(node_id, :) * dR_deta(row_idx)
-                        end do
-                        g_metric = matmul(transpose(J), J)
-                        detJ2D = sqrt(abs(g_metric(1,1)*g_metric(2,2) - g_metric(1,2)*g_metric(2,1)))
-                        dV = detJ2D * QuadBound%W(gp) * beta * 0.25_dp * (u2-u1) * (v2-v1)
-
-                        do row_b = 1, ncp
-                            do col_b = 1, ncp
-                                vals((row_b-1)*ncp + col_b) = vals((row_b-1)*ncp + col_b) + R(row_b) * R(col_b) * dV
+                        ! Match m_petsc.F90 orientation (Column-Major)
+                        do col_b = 1, ncp
+                            do row_b = 1, ncp
+                                vals_local_buffer((col_b-1)*ncp + row_b) = vals_local_buffer((col_b-1)*ncp + row_b) + R(row_b) * R(col_b) * dV
                             end do
                         end do
                     end do
                 end do
             end do
-            
-            call MatSetValues(A, ncp, edge_nodes, ncp, edge_nodes, vals, ADD_VALUES, ierr)
+            ! Note: MatAssemblyEnd is now called in the main program after all BCs are added
+            call MatSetValues(A, ncp, edge_nodes, ncp, edge_nodes, vals_local_buffer, ADD_VALUES, ierr)
         end if
     end do
 
-    deallocate(edge_nodes, vals)
+    deallocate(edge_nodes, vals_local_buffer)
 end subroutine
 
 subroutine PCG_Apply_Robin(mesh, FE, QuadBound, target_id, alpha, A)

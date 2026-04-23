@@ -4,7 +4,6 @@
 #include <petsc/finclude/petscksp.h>
 
 program fem2d_main
-    use omp_lib
     use m_constants
     use m_types
     use m_asmg
@@ -103,14 +102,27 @@ program fem2d_main
         call assemble_source_matrices_pcg(MAT_F_PCG, MAT_S_PCG, FixedSrc_PCG, mesh, FE, Quad, materials, n_groups, is_adjoint)
     end if
 
+        ! Apply Boundary Conditions
     do i = 1, n_groups
         do k = 1, size(bc_config)
             if (solver_choice /= SOLVER_PCG) then
-                call apply_bcs(mesh, FE, Quadbound, bc_config(k), A_petsc=A_MAT(i))
+                call apply_bcs(mesh, FE, QuadBound, bc_config(k), A_petsc=A_MAT(i))
             else
                 call apply_bcs(mesh, FE, Quadbound, bc_config(k), A_pcg=A_PCG(i))
             end if
         end do
+
+            ! Finalize PETSc Assembly after domain and BCs are applied
+            if (solver_choice /= SOLVER_PCG) then
+                call MatAssemblyBegin(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
+                call MatAssemblyEnd(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
+                do k = 1, n_groups
+                    call MatAssemblyBegin(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                    call MatAssemblyEnd(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                    call MatAssemblyBegin(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                    call MatAssemblyEnd(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                end do
+            end if
 
         if (solver_choice /= SOLVER_PCG) then
             call SetupKSP_PETSc(ksp_solvers(i), A_MAT(i), solver_choice, preconditioner_choice)
@@ -135,7 +147,6 @@ program fem2d_main
             end if
         end do
 
-        !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(i, group_diff, ierr) REDUCTION(max:max_phi_change)
         do i = 1, n_groups
             if (solver_choice /= SOLVER_PCG) then
                 call KSPSolve(ksp_solvers(i), B_VEC(i), X_VEC(i), ierr)                
@@ -147,7 +158,6 @@ program fem2d_main
                 max_phi_change = max(max_phi_change, maxval(abs(X_PCG(i)%vec - X_PRIME_PCG(i)%vec)))
             end if
         end do
-        !$OMP END PARALLEL DO
 
         if (is_eigenvalue_problem) then
             if (solver_choice /= SOLVER_PCG) then
@@ -173,6 +183,20 @@ program fem2d_main
             if (max_phi_change < 1e-8) exit
         end if 
     end do
+
+        ! Finalize PETSc Assembly after domain and BCs are applied
+        if (solver_choice /= SOLVER_PCG) then
+            do i = 1, n_groups
+                call MatAssemblyBegin(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
+                call MatAssemblyEnd(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
+                do k = 1, n_groups
+                    call MatAssemblyBegin(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                    call MatAssemblyEnd(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                    call MatAssemblyBegin(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                    call MatAssemblyEnd(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                end do
+            end do
+        end if
 
     if (solver_choice /= SOLVER_PCG) then
         call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 10, .false.)

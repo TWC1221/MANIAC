@@ -115,7 +115,7 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
                   do a = 1, nbasis
                     if (abs(R(a)) < 1e-14_dp) cycle
                     node_id = mesh%elems(ee, a)
-                    if (node_id <= 0 .or. node_id > mesh%n_nodes) cycle
+                    if (node_id <= 0) cycle
                     
                     Xp(gid, 1) = Xp(gid, 1) + R(a) * mesh%nodes(node_id, 1)
                     Xp(gid, 2) = Xp(gid, 2) + R(a) * mesh%nodes(node_id, 2)
@@ -123,7 +123,7 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
                     do g = 1, NGRP
                       Up(gid, g) = Up(gid, g) + R(a) * X_PCG(g)%vec(min(node_id, size(X_PCG(g)%vec)))
                     end do
-                    Wp(gid) = Wp(gid) + R(a) * mesh%weights(node_id)
+                    Wp(gid) = Wp(gid) + R(a) * merge(mesh%weights(node_id), 1.0_dp, node_id > 0)
                   end do
                 end do
               end do
@@ -215,9 +215,11 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
     real(dp) :: R(FE%n_basis), dR_dxi(FE%n_basis), dR_deta(FE%n_basis), dR_dzeta(FE%n_basis)
     real(dp), allocatable :: Xp(:,:), Up(:,:), Wp(:)
     integer,  allocatable :: Cells(:,:), MatID_p(:)
+
     type t_ptr
         PetscScalar, pointer :: p(:)
     end type t_ptr
+    
     type(t_ptr), allocatable :: p_sols(:)
     PetscErrorCode :: ierr
     real(dp) :: xi, eta, zeta, u1, u2, v1, v2, w1, w2
@@ -280,7 +282,6 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
                 do ii = 1, refine_level
                   xi = 0.5_dp * ((u2 - u1) * xi_grid(ii) + (u2 + u1))
                   gid = gid + 1
-
                   call EvalNURBS3D(FE, ee, mesh, xi, eta, zeta, R, dR_dxi, dR_deta, dR_dzeta)
                   Xp(gid, 1:3) = 0.0_dp
                   do g = 1, NGRP
@@ -289,16 +290,18 @@ subroutine export_vtk_pcg(filename, FE, mesh, X_PCG, NGRP, refine_level, use_z)
                   Wp(gid) = 0.0_dp
 
                   do a = 1, nbasis
-                    if (abs(R(a)) < 1e-14_dp) cycle
                     node_id = mesh%elems(ee, a)
-                    if (node_id <= 0) cycle
+                    if (node_id <= 0) cycle 
+                    
+                    if (abs(R(a)) < 1e-14_dp) cycle
+
                     Xp(gid, 1) = Xp(gid, 1) + R(a) * mesh%nodes(node_id, 1)
                     Xp(gid, 2) = Xp(gid, 2) + R(a) * mesh%nodes(node_id, 2)
                     Xp(gid, 3) = Xp(gid, 3) + R(a) * mesh%nodes(node_id, 3)
                     do g = 1, NGRP
                       Up(gid, g) = Up(gid, g) + R(a) * real(p_sols(g)%p(node_id), dp)
                     end do
-                    Wp(gid) = Wp(gid) + R(a) * mesh%weights(node_id)
+                    Wp(gid) = Wp(gid) + R(a) * merge(mesh%weights(node_id), 1.0_dp, node_id > 0)
                   end do
              
                 end do
