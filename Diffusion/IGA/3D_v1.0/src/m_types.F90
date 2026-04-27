@@ -10,7 +10,7 @@ module m_types
         integer,  allocatable :: mats(:)       ! For Quads
         integer,  allocatable :: edge_mats(:)  ! For Lines/Boundaries
 
-                integer,  allocatable :: n_cp_xi(:), n_cp_eta(:), n_cp_zeta(:)
+        integer,  allocatable :: n_cp_xi(:), n_cp_eta(:), n_cp_zeta(:)
         integer,  allocatable :: n_knots_xi_patch(:), n_knots_eta_patch(:), n_knots_zeta_patch(:)
 
         ! For boundary surfaces (2D patches in 3D problem)

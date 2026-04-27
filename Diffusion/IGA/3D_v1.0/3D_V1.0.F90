@@ -43,7 +43,7 @@ program fem2d_main
     real(dp), allocatable   :: mat_volumes(:)
     character(len=32)       :: InputMesh
 
-    InputMesh = "../input/rod_test.asmg"
+    InputMesh = "../input/c5g7.asmg"
     is_eigenvalue_problem   = .true.
     is_adjoint              = .false.
     n_groups               = 7
@@ -86,7 +86,6 @@ program fem2d_main
             call VecSet(X_PRIME_VEC(i), merge(1.0_dp, 0.0_dp, is_eigenvalue_problem), ierr)  
             call KSPCreate(PETSC_COMM_SELF, ksp_solvers(i), ierr)
         end do
-         write(*,*) ">>> Assembling Global Matrix ..."
         call ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F_PETSC, MAT_S_PETSC, PROD_VEC, FixedSrc_PETSC, mesh, FE, Quad, materials, n_groups, is_adjoint)
     else 
         allocate(A_PCG(n_groups), B_PCG(n_groups), X_PCG(n_groups), X_PRIME_PCG(n_groups))
@@ -102,7 +101,7 @@ program fem2d_main
         call assemble_source_matrices_pcg(MAT_F_PCG, MAT_S_PCG, FixedSrc_PCG, mesh, FE, Quad, materials, n_groups, is_adjoint)
     end if
 
-        ! Apply Boundary Conditions
+    ! Apply Boundary Conditions
     do i = 1, n_groups
         do k = 1, size(bc_config)
             if (solver_choice /= SOLVER_PCG) then
@@ -147,6 +146,7 @@ program fem2d_main
             end if
         end do
 
+        !$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(i, group_diff, ierr) REDUCTION(max:max_phi_change)
         do i = 1, n_groups
             if (solver_choice /= SOLVER_PCG) then
                 call KSPSolve(ksp_solvers(i), B_VEC(i), X_VEC(i), ierr)                
@@ -158,6 +158,7 @@ program fem2d_main
                 max_phi_change = max(max_phi_change, maxval(abs(X_PCG(i)%vec - X_PRIME_PCG(i)%vec)))
             end if
         end do
+        !$OMP END PARALLEL DO
 
         if (is_eigenvalue_problem) then
             if (solver_choice /= SOLVER_PCG) then
@@ -184,22 +185,21 @@ program fem2d_main
         end if 
     end do
 
-        ! Finalize PETSc Assembly after domain and BCs are applied
-        if (solver_choice /= SOLVER_PCG) then
-            do i = 1, n_groups
-                call MatAssemblyBegin(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
-                call MatAssemblyEnd(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
-                do k = 1, n_groups
-                    call MatAssemblyBegin(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
-                    call MatAssemblyEnd(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
-                    call MatAssemblyBegin(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
-                    call MatAssemblyEnd(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
-                end do
+    if (solver_choice /= SOLVER_PCG) then
+        do i = 1, n_groups
+            call MatAssemblyBegin(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
+            call MatAssemblyEnd(A_MAT(i), MAT_FINAL_ASSEMBLY, ierr)
+            do k = 1, n_groups
+                call MatAssemblyBegin(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                call MatAssemblyEnd(MAT_F_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                call MatAssemblyBegin(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
+                call MatAssemblyEnd(MAT_S_PETSC(i, k), MAT_FINAL_ASSEMBLY, ierr)
             end do
-        end if
+        end do
+    end if
 
     if (solver_choice /= SOLVER_PCG) then
-        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 10, .false.)
+        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 3, .false.)
         call PetscFinalize(ierr)
     else
         call export_vtk_pcg("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_PCG, n_groups, 10, .false.)

@@ -35,8 +35,8 @@ program fem3d_main
     is_adjoint             = .false.
     is_SEM                 = .false.
     printout               = .true.
-    FE%order               = 10
-    QuadSn%order           = 2
+    FE%order               = 4
+    QuadSn%order           = 4
 
     InputMesh              = "../input/trial_mesh.vtk"
     ref_ID                 = [103] !REFLECTIVE BOUNDARY ID

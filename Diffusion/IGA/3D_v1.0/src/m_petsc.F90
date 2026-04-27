@@ -68,214 +68,155 @@ subroutine ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, 
     integer, intent(in)           :: n_groups
     logical, intent(in)           :: is_adjoint
 
-    integer :: ee, g_to, g_from, i, j, k, q, mat_id, row, count, n_valid, i_b, n_basis_patch
+    integer :: ee, g_to, g_from, i, j, k, q, mat_id, ks, total_spans, node_idx, n_basis_patch
+    real(dp) :: detJ, dV, u1, u2, v1, v2, w1, w2, sigma_s_val, nusigf_val, chi_val
     real(dp) :: elem_coords(FE%n_basis, 3), dN_dx(FE%n_basis), dN_dy(FE%n_basis), dN_dz(FE%n_basis)
-    real(dp) :: detJ, dV, u1, u2, v1, v2, w1, w2
-    integer  :: row_b, col_b, row_it, col_it, buf_ptr
-    real(dp) :: active_Prod(FE%n_basis), active_Src(FE%n_basis)
-    PetscInt :: active_idx(FE%n_basis), idx(FE%n_basis)
-    
-    real(dp), allocatable :: loc_A(:,:,:)
-    real(dp), allocatable :: loc_F(:,:,:,:)
-    real(dp), allocatable :: loc_S(:,:,:,:)
-    real(dp), allocatable :: loc_Prod(:,:)
-    real(dp), allocatable :: loc_Src(:,:)
     real(dp) :: FE_N(FE%n_basis), FE_N_mat(FE%n_basis, FE%n_basis)
-    PetscScalar :: val_buf_local(FE%n_basis * FE%n_basis)
-    real(dp) :: sigma_s_val, nusigf_val, chi_val
-
+    integer, allocatable :: span_map(:,:) 
     PetscErrorCode :: ierr
-    PetscInt, allocatable :: nnz(:)
+    PetscInt, allocatable :: nnz_array(:)
+    integer,  allocatable :: node_to_elem_ptr(:), node_to_elem_list(:)
 
-    allocate(nnz(mesh%n_nodes)); nnz = 0
+    allocate(nnz_array(mesh%n_nodes), node_to_elem_ptr(mesh%n_nodes + 1))
+    nnz_array = 0; node_to_elem_ptr = 0;
     do ee = 1, mesh%n_elems
         n_basis_patch = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee) * mesh%n_cp_zeta(ee)
         do i = 1, n_basis_patch
-            row = mesh%elems(ee, i)
-            if (row > 0) nnz(row) = nnz(row) + n_basis_patch
+            node_idx = mesh%elems(ee, i)
+            if (node_idx > 0) node_to_elem_ptr(node_idx) = node_to_elem_ptr(node_idx) + 1
         end do
     end do
-    ! Cap nnz at total nodes and ensure at least some allocation
-    do i = 1, mesh%n_nodes; nnz(i) = max(1, min(nnz(i), mesh%n_nodes)); end do
+    j = 1
+    do i = 1, mesh%n_nodes
+        k = node_to_elem_ptr(i); node_to_elem_ptr(i) = j; j = j + k
+    end do
+    node_to_elem_ptr(mesh%n_nodes + 1) = j
+    allocate(node_to_elem_list(j - 1))
+    do ee = 1, mesh%n_elems
+        do i = 1, FE%n_basis
+            node_idx = mesh%elems(ee, i)
+            if (node_idx > 0) then
+                node_to_elem_list(node_to_elem_ptr(node_idx) + nnz_array(node_idx)) = ee
+                nnz_array(node_idx) = nnz_array(node_idx) + 1
+            end if
+        end do
+    end do
+    do i = 1, mesh%n_nodes
+        nnz_array(i) = 0
+        do j = node_to_elem_ptr(i), node_to_elem_ptr(i+1) - 1
+            nnz_array(i) = nnz_array(i) + FE%n_basis
+        end do
+        nnz_array(i) = min(nnz_array(i), mesh%n_nodes)
+    end do
+    deallocate(node_to_elem_ptr, node_to_elem_list)
+
+    total_spans = 0
+    do ee = 1, mesh%n_elems
+        total_spans = total_spans + (mesh%n_knots_xi_patch(ee)-1)*(mesh%n_knots_eta_patch(ee)-1)*(mesh%n_knots_zeta_patch(ee)-1)
+    end do
+
+    allocate(span_map(total_spans, 4)) 
+    ks = 0
+    do ee = 1, mesh%n_elems
+        do k = 1, mesh%n_knots_zeta_patch(ee) - 1
+            do j = 1, mesh%n_knots_eta_patch(ee) - 1
+                do i = 1, mesh%n_knots_xi_patch(ee) - 1
+                    ks = ks + 1
+                    span_map(ks, :) = [ee, i, j, k]
+                end do
+            end do
+        end do
+    end do
 
     if (.not. allocated(A_MAT)) allocate(A_MAT(n_groups))
     if (.not. allocated(MAT_F)) allocate(MAT_F(n_groups, n_groups))
     if (.not. allocated(MAT_S)) allocate(MAT_S(n_groups, n_groups))
-    
     if (.not. allocated(PROD_VEC)) allocate(PROD_VEC(n_groups))
     if (.not. allocated(FixedSrc)) allocate(FixedSrc(n_groups))
 
     do g_to = 1, n_groups
-        ! Initialize Vectors
         call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, PROD_VEC(g_to), ierr)
         call VecCreateSeq(PETSC_COMM_SELF, mesh%n_nodes, FixedSrc(g_to), ierr)
-
-        ! Create Matrices with precise preallocation
-        call MatCreateSeqAIJ(PETSC_COMM_SELF, mesh%n_nodes, mesh%n_nodes, PETSC_NULL_INTEGER, nnz, A_MAT(g_to), ierr)
-        call MatSetOption(A_MAT(g_to), MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE, ierr)
+        call MatCreateSeqAIJ(PETSC_COMM_SELF, mesh%n_nodes, mesh%n_nodes, PETSC_NULL_INTEGER, nnz_array, A_MAT(g_to), ierr)
         call MatSetOption(A_MAT(g_to), MAT_ROW_ORIENTED, PETSC_FALSE, ierr)
-
         do g_from = 1, n_groups
-            call MatCreateSeqAIJ(PETSC_COMM_SELF, mesh%n_nodes, mesh%n_nodes, PETSC_NULL_INTEGER, nnz, MAT_F(g_to, g_from), ierr)
-            call MatSetOption(MAT_F(g_to, g_from), MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE, ierr)
+            call MatCreateSeqAIJ(PETSC_COMM_SELF, mesh%n_nodes, mesh%n_nodes, PETSC_NULL_INTEGER, nnz_array, MAT_F(g_to, g_from), ierr)
+            call MatCreateSeqAIJ(PETSC_COMM_SELF, mesh%n_nodes, mesh%n_nodes, PETSC_NULL_INTEGER, nnz_array, MAT_S(g_to, g_from), ierr)
             call MatSetOption(MAT_F(g_to, g_from), MAT_ROW_ORIENTED, PETSC_FALSE, ierr)
-
-            call MatCreateSeqAIJ(PETSC_COMM_SELF, mesh%n_nodes, mesh%n_nodes, PETSC_NULL_INTEGER, nnz, MAT_S(g_to, g_from), ierr)
-            call MatSetOption(MAT_S(g_to, g_from), MAT_NEW_NONZERO_ALLOCATION_ERR, PETSC_FALSE, ierr)
             call MatSetOption(MAT_S(g_to, g_from), MAT_ROW_ORIENTED, PETSC_FALSE, ierr)
         end do
     end do
 
-    count = 0
-    write(*,'(A)') " [ MATRIX ] :: Starting element-wise assembly..."
-    
-    ! Pre-allocate local buffers outside the loop for speed and stability
-    allocate(loc_A(FE%n_basis, FE%n_basis, n_groups))
-    allocate(loc_F(FE%n_basis, FE%n_basis, n_groups, n_groups))
-    allocate(loc_S(FE%n_basis, FE%n_basis, n_groups, n_groups))
-    allocate(loc_Prod(FE%n_basis, n_groups), loc_Src(FE%n_basis, n_groups))
-
-    do ee = 1, mesh%n_elems
-        loc_A = 0.0_dp; loc_F = 0.0_dp; loc_S = 0.0_dp
-        loc_Prod = 0.0_dp; loc_Src = 0.0_dp
-
-        mat_id = mesh%mats(ee)
-        n_basis_patch = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee) * mesh%n_cp_zeta(ee)
-        
-        if (n_basis_patch > FE%n_basis) stop "ERROR: n_basis_patch > FE%n_basis. Check mesh definitions."
-
-        idx = -1
-        idx(1:n_basis_patch) = mesh%elems(ee, 1:n_basis_patch) - 1
-
-        do i = 1, n_basis_patch
-            row = mesh%elems(ee, i)
-            if (row > 0) then
-                elem_coords(i, :) = mesh%nodes(row, :)
-            else
-                elem_coords(i, :) = 0.0_dp
-            end if
-        end do
-
-        do i = 1, mesh%n_knots_xi_patch(ee) - 1
-            u1 = mesh%knot_vectors_xi(ee, i); u2 = mesh%knot_vectors_xi(ee, i+1)
-            if (abs(u2 - u1) < 1e-10_dp) cycle
+    write(*,*) " [ MATRIX ] :: Starting assembly loop over ",(total_spans)," spans..."
+    !$OMP PARALLEL DO DEFAULT(SHARED) &
+    !$OMP PRIVATE(ks, ee, i, j, k, mat_id, u1, u2, v1, v2, w1, w2, q, detJ, dV, ierr, &
+    !$OMP         elem_coords, dN_dx, dN_dy, dN_dz, FE_N, FE_N_mat, &
+    !$OMP         sigma_s_val, nusigf_val, chi_val, g_to, g_from)
+    do ks = 1, total_spans
+        block
+            PetscInt :: pidx(FE%n_basis)
+            real(dp) :: span_A(FE%n_basis, FE%n_basis), span_F(FE%n_basis, FE%n_basis), span_S(FE%n_basis, FE%n_basis)
+            real(dp) :: span_Prod(FE%n_basis), span_Src(FE%n_basis)
             
-            do j = 1, mesh%n_knots_eta_patch(ee) - 1
-                v1 = mesh%knot_vectors_eta(ee, j); v2 = mesh%knot_vectors_eta(ee, j+1)
-                if (abs(v2 - v1) < 1e-10_dp) cycle
+            ee = span_map(ks, 1); i = span_map(ks, 2); j = span_map(ks, 3); k = span_map(ks, 4)
+            mat_id = mesh%mats(ee); pidx = mesh%elems(ee, :) - 1
+            
+            do q = 1, FE%n_basis
+                elem_coords(q, :) = merge(mesh%nodes(mesh%elems(ee, q), :), 0.0_dp, mesh%elems(ee, q) > 0)
+            end do
 
-                do k = 1, mesh%n_knots_zeta_patch(ee) - 1
-                    w1 = mesh%knot_vectors_zeta(ee, k); w2 = mesh%knot_vectors_zeta(ee, k+1)
-                    if (abs(w2 - w1) < 1e-10_dp) cycle
+            u1 = mesh%knot_vectors_xi(ee, i);   u2 = mesh%knot_vectors_xi(ee, i+1)
+            v1 = mesh%knot_vectors_eta(ee, j);  v2 = mesh%knot_vectors_eta(ee, j+1)
+            w1 = mesh%knot_vectors_zeta(ee, k); w2 = mesh%knot_vectors_zeta(ee, k+1)
+            if (abs(u2-u1)<1e-10_dp .or. abs(v2-v1)<1e-10_dp .or. abs(w2-w1)<1e-10_dp) cycle
 
+            do g_to = 1, n_groups
+                span_A = 0.0_dp; span_Prod = 0.0_dp; span_Src = 0.0_dp
+                do q = 1, Quad%NoPoints
+                    call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, elem_coords, dN_dx, dN_dy, dN_dz, detJ, FE_N, FE_N_mat)
+                    dV = detJ * Quad%W(q)
+                    span_Prod = span_Prod + merge(mats(mat_id)%NuSigF(g_to), mats(mat_id)%Chi(g_to), .not. is_adjoint) * FE_N * dV
+                    span_Src  = span_Src  + mats(mat_id)%Src(g_to) * FE_N * dV
+                    span_A    = span_A    + (mats(mat_id)%D(g_to) * (spread(dN_dx,2,FE%n_basis)*spread(dN_dx,1,FE%n_basis) + &
+                                spread(dN_dy,2,FE%n_basis)*spread(dN_dy,1,FE%n_basis) + spread(dN_dz,2,FE%n_basis)*spread(dN_dz,1,FE%n_basis)) + &
+                                mats(mat_id)%SigmaR(g_to) * FE_N_mat) * dV
+                end do
+                
+                !$OMP CRITICAL
+                call VecSetValues(PROD_VEC(g_to), FE%n_basis, pidx, span_Prod, ADD_VALUES, ierr)
+                call VecSetValues(FixedSrc(g_to), FE%n_basis, pidx, span_Src,  ADD_VALUES, ierr)
+                call MatSetValues(A_MAT(g_to), FE%n_basis, pidx, FE%n_basis, pidx, reshape(transpose(span_A), [FE%n_basis ** 2]), ADD_VALUES, ierr)
+                !$OMP END CRITICAL
+
+                do g_from = 1, n_groups
+                    span_F = 0.0_dp; span_S = 0.0_dp
+                    nusigf_val = merge(mats(mat_id)%NuSigF(g_from), mats(mat_id)%Chi(g_from), .not. is_adjoint)
+                    chi_val    = merge(mats(mat_id)%Chi(g_to), mats(mat_id)%NuSigF(g_to), .not. is_adjoint)
+                    sigma_s_val = merge(mats(mat_id)%SigmaS(g_from, g_to), mats(mat_id)%SigmaS(g_to, g_from), .not. is_adjoint)
+                    
                     do q = 1, Quad%NoPoints
-                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, &
-                                         elem_coords, dN_dx, dN_dy, dN_dz, detJ, FE_N, FE_N_mat)
+                        call GetMapping3D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, w1, w2, elem_coords, dN_dx, dN_dy, dN_dz, detJ, FE_N, FE_N_mat)
                         dV = detJ * Quad%W(q)
-                        
-                        do g_to = 1, n_groups
-                            do row_b = 1, n_basis_patch
-                                loc_Prod(row_b, g_to) = loc_Prod(row_b, g_to) + merge(mats(mat_id)%NuSigF(g_to),mats(mat_id)%Chi(g_to), .not. is_adjoint) * FE_N(row_b) * dV
-                                loc_Src(row_b, g_to)  = loc_Src(row_b, g_to)  + mats(mat_id)%Src(g_to) * FE_N(row_b) * dV
-                                
-                                do col_b = 1, n_basis_patch
-                                    loc_A(row_b, col_b, g_to) = loc_A(row_b, col_b, g_to) + (mats(mat_id)%D(g_to) * (dN_dx(row_b)*dN_dx(col_b) + dN_dy(row_b)*dN_dy(col_b) + dN_dz(row_b)*dN_dz(col_b)) + mats(mat_id)%SigmaR(g_to) * FE_N_mat(row_b,col_b)) * dV
-
-                                    do g_from = 1, n_groups
-                                        nusigf_val = merge(mats(mat_id)%NuSigF(g_from), mats(mat_id)%Chi(g_from), .not. is_adjoint)
-                                        chi_val    = merge(mats(mat_id)%Chi(g_to), mats(mat_id)%NuSigF(g_to), .not. is_adjoint)
-                                        
-                                        loc_F(row_b, col_b, g_to, g_from) = loc_F(row_b, col_b, g_to, g_from) + chi_val * nusigf_val * FE_N_mat(row_b,col_b) * dV
-
-                                        if (g_from /= g_to) then
-                                            sigma_s_val = merge(mats(mat_id)%SigmaS(g_from, g_to), mats(mat_id)%SigmaS(g_to, g_from), .not. is_adjoint)
-                                            loc_S(row_b, col_b, g_to, g_from) = loc_S(row_b, col_b, g_to, g_from) + sigma_s_val * FE_N_mat(row_b,col_b) * dV
-                                        end if
-                                    end do
-                                end do
-                            end do
-                        end do
+                        span_F = span_F + chi_val * nusigf_val * FE_N_mat * dV
+                        if (g_from /= g_to) span_S = span_S + sigma_s_val * FE_N_mat * dV
                     end do
+                    
+                    !$OMP CRITICAL
+                    call MatSetValues(MAT_F(g_to, g_from), FE%n_basis, pidx, FE%n_basis, pidx, reshape(transpose(span_F), [FE%n_basis ** 2]), ADD_VALUES, ierr)
+                    if (g_from /= g_to) call MatSetValues(MAT_S(g_to, g_from), FE%n_basis, pidx, FE%n_basis, pidx, reshape(transpose(span_S), [FE%n_basis ** 2]), ADD_VALUES, ierr)
+                    !$OMP END CRITICAL
                 end do
             end do
-        end do
-
-        ! Filter out padded indices (-1) before sending to PETSc
-        n_valid = 0
-        do i = 1, n_basis_patch
-            if (idx(i) >= 0) then
-                n_valid = n_valid + 1
-                active_idx(n_valid) = idx(i)
-            end if
-        end do
-
-        do g_to = 1, n_groups
-            i_b = 0
-            do i = 1, FE%n_basis
-                if (idx(i) < 0) cycle
-                i_b = i_b + 1
-                active_Prod(i_b) = loc_Prod(merge(i, 1, i <= n_basis_patch), g_to)
-                active_Src(i_b)  = loc_Src(merge(i, 1, i <= n_basis_patch), g_to)
-            end do
-
-            call VecSetValues(PROD_VEC(g_to), n_valid, active_idx(1:n_valid), active_Prod(1:n_valid), ADD_VALUES, ierr)
-            call VecSetValues(FixedSrc(g_to), n_valid, active_idx(1:n_valid), active_Src(1:n_valid), ADD_VALUES, ierr)
-            
-            buf_ptr = 1
-            do col_it = 1, n_basis_patch
-                if (idx(col_it) < 0) cycle
-                do row_it = 1, n_basis_patch
-                    if (idx(row_it) < 0) cycle
-                    val_buf_local(buf_ptr) = loc_A(row_it, col_it, g_to)
-                    buf_ptr = buf_ptr + 1
-                end do
-            end do
-
-            call MatSetValues(A_MAT(g_to), n_valid, active_idx(1:n_valid), n_valid, active_idx(1:n_valid), &
-                              val_buf_local, ADD_VALUES, ierr)
-
-            do g_from = 1, n_groups
-                ! Pack loc_F into val_buf
-                buf_ptr = 1
-                do col_it = 1, n_basis_patch
-                    if (idx(col_it) < 0) cycle
-                    do row_it = 1, n_basis_patch
-                        if (idx(row_it) < 0) cycle
-                        val_buf_local(buf_ptr) = loc_F(row_it, col_it, g_to, g_from)
-                        buf_ptr = buf_ptr + 1
-                    end do
-                end do
-                call MatSetValues(MAT_F(g_to, g_from), n_valid, active_idx(1:n_valid), n_valid, active_idx(1:n_valid), &
-                              val_buf_local, ADD_VALUES, ierr)
-                if (g_from /= g_to) then
-                    ! Pack loc_S into val_buf
-                    buf_ptr = 1
-                    do col_it = 1, n_basis_patch
-                        if (idx(col_it) < 0) cycle
-                        do row_it = 1, n_basis_patch
-                            if (idx(row_it) < 0) cycle
-                            val_buf_local(buf_ptr) = loc_S(row_it, col_it, g_to, g_from)
-                            buf_ptr = buf_ptr + 1
-                        end do
-                    end do
-                    call MatSetValues(MAT_S(g_to, g_from), n_valid, active_idx(1:n_valid), n_valid, active_idx(1:n_valid), &
-                                      val_buf_local, ADD_VALUES, ierr)
-                end if
-            end do
-        end do
-
-        count = count + 1
-        if (mod(count, 7500) == 0) write(*,'(A,I0,A,I0,A,F6.2,A)') ">>> Assembled Element ", count, " of ", mesh%n_elems, " (", real(count,dp)/real(mesh%n_elems,dp)*100.0_dp, "%)"
+        end block
     end do
-
-    deallocate(loc_A, loc_F, loc_S, loc_Prod, loc_Src)
+    !$OMP END PARALLEL DO
 
     ! Finalize vectors, but leave matrices unassembled for BCs
     do i = 1, n_groups
-        call VecAssemblyBegin(PROD_VEC(i), ierr); call VecAssemblyEnd(PROD_VEC(i), ierr)
-        call VecAssemblyBegin(FixedSrc(i), ierr); call VecAssemblyEnd(FixedSrc(i), ierr)
+        PetscCall(VecAssemblyBegin(PROD_VEC(i), ierr)); PetscCall(VecAssemblyEnd(PROD_VEC(i), ierr))
+        PetscCall(VecAssemblyBegin(FixedSrc(i), ierr)); PetscCall(VecAssemblyEnd(FixedSrc(i), ierr))
     end do
-    deallocate(nnz)
+    deallocate(nnz_array, span_map)
 end subroutine ASSEMBLEMultigroupMAT_PETSc
 
 subroutine EVALMultigroup_PETSc(B, MAT_F, MAT_S, FixedSrc, X_VEC, X_OLD, &

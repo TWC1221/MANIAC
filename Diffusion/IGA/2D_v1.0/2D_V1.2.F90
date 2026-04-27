@@ -43,7 +43,7 @@ program fem2d_main
     real(dp)                :: k_eff, k_eff_prime, total_production
     character(len=32)       :: InputMesh
 
-    InputMesh = "../input/c5g7_test.asmg"
+    InputMesh = "../input/pincell_test.asmg"
     is_eigenvalue_problem   = .true.
     is_adjoint              = .false.
     n_groups               = 7
@@ -63,8 +63,8 @@ program fem2d_main
     call InitialiseBasis(FE)
     call InitialiseMaterials(materials, mesh, n_groups, "../input/MATS.txt", printout = .false.)
 
-    call InitialiseBoundaries(bc_config(1), 2, BC_VACUUM, 0.0_dp)
-    call InitialiseBoundaries(bc_config(2), 3, BC_REFLECTIVE, 0.0_dp)
+    ! call InitialiseBoundaries(bc_config(1), 2, BC_VACUUM, 0.0_dp)
+    ! call InitialiseBoundaries(bc_config(2), 3, BC_REFLECTIVE, 0.0_dp)
 
     ! call InitialiseBoundaries(bc_config(2), 102, BC_VACUUM, 0.0_dp)
     ! call InitialiseBoundaries(bc_config(3), 103, BC_REFLECTIVE, 0.0_dp)

@@ -168,12 +168,6 @@ subroutine ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, 
         
         do q = 1, Quad%NoPoints
             call GetMapping(FE, q, elem_coords, dN_dx, dN_dy, dN_dz, detJ)
-            ! if (detJ <= 0.0_dp) then
-            !     !$OMP CRITICAL
-            !     print *, "FATAL: Negative Jacobian at element ", ee
-            !     stop
-            !     !$OMP END CRITICAL
-            ! end if
 
             dV = detJ * Quad%W(q)
             
