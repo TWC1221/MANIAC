@@ -3,48 +3,71 @@ module m_types
     implicit none
     
     type t_mesh
-        integer               :: n_nodes
-        integer               :: n_elems
-        integer               :: n_edges
-        integer               :: n_faces_per_elem
-        integer               :: order
-        integer               :: nloc               ! Max control points per patch
         integer               :: dim
+        integer               :: n_nodes          ! Total number of unique control points
+        real(dp), allocatable :: nodes(:,:)       ! Global coordinates of control points
+        real(dp), allocatable :: weights(:)       ! Weights of control points (NURBS)
 
-        real(dp), allocatable :: nodes(:,:)
-        real(dp), allocatable :: weights(:)         ! Control point weights
-        integer,  allocatable :: elems(:,:)
-        integer,  allocatable :: edges(:,:)
-        integer,  allocatable :: material_ids(:)      
-        integer,  allocatable :: boundary_ids(:)  
+        ! --- Original NURBS Patch Data ---
+        integer              :: n_patches        
+        integer              :: n_edges          
+        integer              :: max_cp_patch     
+        integer              :: max_knots_patch  
+        integer, allocatable :: patch_cp_ids(:,:) ! Global CP IDs for each original patch
+        integer, allocatable :: patch_material_ids(:)
+        integer, allocatable :: patch_n_cp_xi(:), patch_n_cp_eta(:)
+        integer, allocatable :: patch_n_knots_xi(:), patch_n_knots_eta(:)
+        real(dp), allocatable :: patch_knot_vectors_xi(:,:)
+        real(dp), allocatable :: patch_knot_vectors_eta(:,:)
 
-        real(dp), allocatable :: span_range(:,:)            ! (4, n_elems) -> u_min, u_max, v_min, v_max
-        integer,  allocatable :: n_knots_xi_patch(:), n_knots_eta_patch(:)
-        integer,  allocatable :: n_cp_edge(:), n_knots_edge(:)
-        real(dp), allocatable :: edge_knots(:,:)
-        integer,  allocatable :: n_cp_xi(:), n_cp_eta(:)
-        real(dp), allocatable :: knot_vectors_xi(:,:), knot_vectors_eta(:,:)
-        
-        integer, allocatable  :: face_connectivity(:,:,:)       
-        real(dp), allocatable :: face_normals(:,:,:)        ! (dim, n_faces_per_elem, n_elems)
-        real(dp), allocatable :: face_mass_x(:,:,:,:)           ! (n_basis, n_basis, n_faces, n_elems)
-        real(dp), allocatable :: face_mass_y(:,:,:,:)           ! Normal-weighted mass matrices
-        real(dp), allocatable :: elem_mass_matrix(:,:,:)    ! (n_basis, n_basis, n_elems)
-        real(dp), allocatable :: basis_integrals_vol(:,:)       ! (n_basis, n_elems)
-        real(dp), allocatable :: elem_stiffness_x(:,:,:)        ! (n_basis, n_basis, n_elems) gradient x
-        real(dp), allocatable :: elem_stiffness_y(:,:,:)        ! (n_basis, n_basis, n_elems) gradient y
-        
-        real(dp), allocatable :: local_lu(:,:,:,:,:)        ! local_lu: (Basis, Basis, Element, Angle, Group)
-        integer,  allocatable :: local_pivots(:,:,:,:)      ! local_pivots: (Basis, Element, Angle, Group)
-        integer,  allocatable :: reflect_map(:,:,:)         ! reflect_map: (Angle, Face, Element) -> Index of reflected angle
-        integer, allocatable  :: upwind_idx(:,:,:)          ! upwind_idx(face_node, face, element) -> global angular flux index
+        integer, allocatable :: edges(:,:) ! Global CP IDs for each original edge patch
+        integer, allocatable :: boundary_ids(:)
+        integer, allocatable :: edge_n_cp_xi(:)
+        integer, allocatable :: edge_n_knots_xi(:)
+        real(dp), allocatable :: edge_knot_vectors_xi(:,:)
+
+        ! --- Solver Elements (Knot Spans) ---
+        integer :: n_elems          
+        integer :: n_faces          
+        integer :: n_cp_per_elem    
+        integer :: order            ! Global polynomial order
+
+        integer, allocatable :: elems(:,:)        ! Global CP IDs per knot span element
+        integer, allocatable :: material_ids(:)
+        integer, allocatable :: pin_ids(:)
+        integer, allocatable :: elem_patch_id(:)  ! Parent patch reference
+        real(dp), allocatable :: elem_u_min(:), elem_u_max(:) 
+        real(dp), allocatable :: elem_v_min(:), elem_v_max(:)
+
+        ! --- Transport Physics & Connectivity ---
+        integer :: n_faces_per_elem
+        integer, allocatable :: face_connectivity(:,:,:)
+        real(dp), allocatable :: face_normals(:,:,:)
+        integer, allocatable :: upwind_idx(:,:,:)
+        integer, allocatable :: reflect_map(:,:,:)
+
+        real(dp), allocatable :: elem_mass_matrix(:,:,:)
+        real(dp), allocatable :: elem_stiffness_x(:,:,:)
+        real(dp), allocatable :: elem_stiffness_y(:,:,:)
+        real(dp), allocatable :: face_mass_x(:,:,:,:)
+        real(dp), allocatable :: face_mass_y(:,:,:,:)
+        real(dp), allocatable :: basis_integrals_vol(:,:)
+        real(dp), allocatable :: local_lu(:,:,:,:,:)
+        integer,  allocatable :: local_pivots(:,:,:,:)
     end type t_mesh
 
-    type :: t_finite
-        integer               :: order, p_order, q_order
-        integer               :: n_basis
-        integer               :: n_nodes_per_face                   ! Max nodes on any face across mesh
-        integer, allocatable  :: face_node_map(:,:,:)       ! (n_nodes_per_face, 4, n_elems)
+    type t_finite
+        integer :: order
+        integer :: p_order, q_order
+        integer :: n_basis
+        integer :: n_nodes_per_face
+        integer, allocatable :: face_node_map(:,:)
+        real(dp), allocatable :: node_roots(:)
+        real(dp), allocatable :: basis_at_quad(:,:)
+        real(dp), allocatable :: dbasis_dxi(:,:)
+        real(dp), allocatable :: dbasis_deta(:,:)
+        real(dp), allocatable :: basis_at_bound_quad(:,:)
+        real(dp), allocatable :: dbasis_at_bound_quad(:,:)
     end type t_finite
 
     type t_material
@@ -74,7 +97,7 @@ module m_types
         real(dp), dimension(:), allocatable   :: weights
     end type t_sn_quadrature
 
-    type :: t_edge_sort
+    type t_edge_sort
         integer :: n1, n2
     end type t_edge_sort
 

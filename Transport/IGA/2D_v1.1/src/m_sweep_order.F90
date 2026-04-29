@@ -1,10 +1,9 @@
 module m_sweep_order
     use m_constants
     use m_types
-    use m_basis, only: EvalNURBS2D
     implicit none
-    private
-    public :: InitialiseGeometry
+    private ! This should be public for InitialiseGeometry
+    public :: InitialiseGeometry, connectivity_and_normals ! connectivity_and_normals needs to be public for testing
 
 contains
 
@@ -37,13 +36,10 @@ contains
         type(t_mesh), intent(inout)  :: mesh
         type(t_finite), intent(in)   :: FE
 
-        integer :: e1, e2, f1, f2, orientation
-        real(dp) :: nx, ny, len, xu, yu, xv, yv, u_eval, v_eval
-        real(dp) :: u1, u2, v1, v2
-        real(dp), allocatable :: R(:), dR_dxi(:), dR_deta(:)
+        integer :: e1, e2, f1, f2, n_nodes_per_face, orientation
         logical :: found_neighbor
 
-        allocate(R(FE%n_basis), dR_dxi(FE%n_basis), dR_deta(FE%n_basis))
+        n_nodes_per_face = FE%order + 1
         mesh%n_faces_per_elem = 4
 
         allocate(mesh%face_connectivity(4, mesh%n_faces_per_elem, mesh%n_elems))
@@ -66,9 +62,9 @@ contains
                     do f2 = 1, mesh%n_faces_per_elem
                         if (mesh%face_connectivity(1, f2, e2) /= -1) cycle ! Already has a neighbor on this face
 
-                        orientation = get_face_orientation( &
-                            mesh%elems(e1, pack(FE%face_node_map(:, f1, e1), FE%face_node_map(:, f1, e1) /= 0)), &
-                            mesh%elems(e2, pack(FE%face_node_map(:, f2, e2), FE%face_node_map(:, f2, e2) /= 0)))
+                        orientation = get_face_orientation(mesh, &
+                            mesh%elems(e1, FE%face_node_map(:, f1)), &
+                            mesh%elems(e2, FE%face_node_map(:, f2)))
 
                         if (orientation /= 0) then
                             mesh%face_connectivity(1, f1, e1) = e2
@@ -89,17 +85,16 @@ contains
         end do
 
         block
-            integer :: i_edge
-            integer, allocatable :: nodes_face(:)
+            integer :: i_edge, nodes_face(FE%n_nodes_per_face)
             
             do e1 = 1, mesh%n_elems
                 do f1 = 1, mesh%n_faces_per_elem
                     if (mesh%face_connectivity(1, f1, e1) == -1) then
-                        nodes_face = mesh%elems(e1, pack(FE%face_node_map(:, f1, e1), FE%face_node_map(:, f1, e1) /= 0))
+                        nodes_face = mesh%elems(e1, FE%face_node_map(:, f1))
                         
                         do i_edge = 1, mesh%n_edges
                             ! Check if the file's Edge definition is a subset of the Element's Face
-                            if (all_nodes_in_list(mesh%edges(i_edge, :), nodes_face)) then
+                            if (all_nodes_in_list(mesh, mesh%edges(i_edge, :), nodes_face)) then
                                 mesh%face_connectivity(4, f1, e1) = mesh%boundary_ids(i_edge)
                                 exit
                             end if
@@ -109,100 +104,75 @@ contains
             end do
         end block
 
-        ! Part 2: High-Fidelity Outward Normals Calculation for Digraph Resolution
-        ! We evaluate tangents using NURBS basis functions at parametric face midpoints.
-        !$omp parallel do default(none) &
-        !$omp shared(mesh, FE) &
-        !$omp private(e1, f1, u1, u2, v1, v2, u_eval, v_eval, R, dR_dxi, dR_deta, xu, yu, xv, yv, nx, ny, len) &
-        !$omp schedule(static)
+        ! Part 3: Enforce Absolute Consistency on Internal Faces
+        ! This prevents cycles caused by floating point noise or "twisted" local indexing
         do e1 = 1, mesh%n_elems
-            u1 = mesh%span_range(1, e1); u2 = mesh%span_range(2, e1)
-            v1 = mesh%span_range(3, e1); v2 = mesh%span_range(4, e1)
-
             do f1 = 1, mesh%n_faces_per_elem
-                select case(f1)
-                    case(1); u_eval = 0.5_dp * (u1 + u2); v_eval = v1
-                    case(2); u_eval = u2;                v_eval = 0.5_dp * (v1 + v2)
-                    case(3); u_eval = 0.5_dp * (u1 + u2); v_eval = v2
-                    case(4); u_eval = u1;                v_eval = 0.5_dp * (v1 + v2)
-                end select
-
-                call EvalNURBS2D(FE, e1, mesh, u_eval, v_eval, R, dR_dxi, dR_deta)
-                
-                xu = dot_product(dR_dxi,  mesh%nodes(mesh%elems(e1, :), 1))
-                yu = dot_product(dR_dxi,  mesh%nodes(mesh%elems(e1, :), 2))
-                xv = dot_product(dR_deta, mesh%nodes(mesh%elems(e1, :), 1))
-                yv = dot_product(dR_deta, mesh%nodes(mesh%elems(e1, :), 2))
-
-                ! Outward normal logic based on parametric face orientation
-                select case(f1)
-                    case(1); nx =  yu; ny = -xu  ! Bottom
-                    case(2); nx =  yv; ny = -xv  ! Right
-                    case(3); nx = -yu; ny =  xu  ! Top
-                    case(4); nx = -yv; ny =  xv  ! Left
-                end select
-
-                len = sqrt(nx**2 + ny**2)
-                if (len > dp_EPSILON) then
-                    mesh%face_normals(:, f1, e1) = [nx, ny] / len
+                e2 = mesh%face_connectivity(1, f1, e1)
+                if (e2 > e1) then 
+                    f2 = mesh%face_connectivity(2, f1, e1)
+                    ! Ensure neighbor's normal is exactly opposite
+                    mesh%face_normals(:, f2, e2) = -mesh%face_normals(:, f1, e1)
                 end if
             end do
         end do
-        !$omp end parallel do
-        deallocate(R, dR_dxi, dR_deta)
     end subroutine connectivity_and_normals
     
     subroutine precompute_upwind_indices(mesh, FE)
         type(t_mesh), intent(inout) :: mesh
         type(t_finite), intent(in)  :: FE
-        integer :: ee, f, j_f, j_nf, nid, n_fac, orient, nx_ee, nx_nid
+        integer :: ee, f, j_f, j_nf, nid, n_fac, orient
 
         allocate(mesh%upwind_idx(FE%n_nodes_per_face, mesh%n_faces_per_elem, mesh%n_elems))
         mesh%upwind_idx = 0
 
         do ee = 1, mesh%n_elems
             do f = 1, mesh%n_faces_per_elem
-                if (f == 1 .or. f == 3) then; nx_ee = mesh%n_cp_xi(ee); else; nx_ee = mesh%n_cp_eta(ee); end if
                 nid = mesh%face_connectivity(1, f, ee)
                 
                 if (nid > 0) then ! Internal neighbor exists
                     n_fac  = mesh%face_connectivity(2, f, ee)
                     orient = mesh%face_connectivity(3, f, ee)
-                    if (n_fac == 1 .or. n_fac == 3) then; nx_nid = mesh%n_cp_xi(nid); else; nx_nid = mesh%n_cp_eta(nid); end if
                     
-                    do j_f = 1, nx_ee
+                    do j_f = 1, FE%n_nodes_per_face
                         ! Handle face orientation (flipped or same)
                         if (orient == 1) then
                             j_nf = j_f
                         else
-                            j_nf = nx_nid - j_f + 1
+                            j_nf = FE%n_nodes_per_face - j_f + 1
                         end if
                         
                         ! Pre-calculate the absolute memory index in the angular flux array
                         ! Index = (Neighbor_ID - 1) * Nodes_Per_Elem + Local_Node_Index_on_Neighbor_Face
-                        mesh%upwind_idx(j_f, f, ee) = (nid - 1) * FE%n_basis + FE%face_node_map(j_nf, n_fac, nid)
+                        mesh%upwind_idx(j_f, f, ee) = (nid - 1) * FE%n_basis + FE%face_node_map(j_nf, n_fac)
                     end do
                 end if
             end do
         end do
     end subroutine precompute_upwind_indices
 
-    ! Helper to verify if boundary edges match knot span faces
-    pure function all_nodes_in_list(subset, superset) result(is_subset)
+    function all_nodes_in_list(mesh, subset, superset) result(is_subset)
+        type(t_mesh), intent(in) :: mesh
         integer, intent(in) :: subset(:), superset(:)
         logical :: is_subset
-        integer :: i
+        integer :: ii, j, k
+        real(dp) :: x, y
         
         is_subset = .true.
-        do i = 1, size(subset)
-            if (subset(i) == 0) cycle ! Ignore zero-padding in edge connectivity
-            if (.not. any(superset == subset(i))) then
+        do ii = 1, size(subset)
+            if (subset(ii) == 0) cycle ! Ignore zero-padding in edge connectivity
+            x = mesh%nodes(subset(ii), 1); y = mesh%nodes(subset(ii), 2)
+            j = 0
+            do k = 1, size(superset)
+                if (abs(mesh%nodes(superset(k),1) - x) < dp_EPSILON .and. &
+                    abs(mesh%nodes(superset(k),2) - y) < dp_EPSILON) j = 1
+            end do
+            if (j == 0) then
                 is_subset = .false.; return
             end if
         end do
     end function all_nodes_in_list
 
-    ! Kahn's Algorithm for Topological Sort of the Transport Digraph
     subroutine generate_sweep_order(mesh, direction, sweep_order)
         type(t_mesh), intent(in)      :: mesh
         real(dp), intent(in)          :: direction(2)
@@ -217,10 +187,9 @@ contains
 
         head = 1
         tail = 0
-        ! Initialize DAG: count incoming dependencies based on flow direction
         do e1 = 1, mesh%n_elems
             do f1 = 1, mesh%n_faces_per_elem
-                if (dot_product(mesh%face_normals(:, f1, e1), direction) < -dp_EPSILON) then
+                    if (dot_product(mesh%face_normals(:, f1, e1), direction) < -1e-12_dp) then
                     if (mesh%face_connectivity(1, f1, e1) > 0) incoming(e1) = incoming(e1) + 1
                 end if
             end do
@@ -229,11 +198,9 @@ contains
                 queue(tail) = e1
             end if
         end do
-
         sweep_idx = 0
         level_end = tail
         
-        ! Process digraph
         do while (head <= tail)
             do while (head <= level_end)
                 e1 = queue(head)
@@ -243,7 +210,7 @@ contains
                 sweep_order(sweep_idx) = e1
 
                 do f1 = 1, mesh%n_faces_per_elem
-                    if (dot_product(mesh%face_normals(:, f1, e1), direction) > dp_EPSILON) then
+                    if (dot_product(mesh%face_normals(:, f1, e1), direction) > 1e-12_dp) then
                         e2 = mesh%face_connectivity(1, f1, e1)
                         if (e2 > 0) then
                             incoming(e2) = incoming(e2) - 1
@@ -266,27 +233,31 @@ contains
         deallocate(queue, incoming)
     end subroutine generate_sweep_order
 
-    pure function get_face_orientation(nodes1, nodes2) result(orientation)
+    function get_face_orientation(mesh, nodes1, nodes2) result(orientation)
+        type(t_mesh), intent(in) :: mesh
         integer, intent(in) :: nodes1(:), nodes2(:)
         integer :: orientation
-        integer :: n_nodes
+        integer :: n, ii
+        real(dp), allocatable :: x1(:), y1(:), x2(:), y2(:)
         
         orientation = 0
-        n_nodes = size(nodes1)
-        if (n_nodes /= size(nodes2)) return
+        n = size(nodes1)
+        if (n /= size(nodes2)) return
 
-        ! Check for same orientation by comparing all nodes in the sequence.
-        if (all(nodes1 == nodes2)) then
+        allocate(x1(n), y1(n), x2(n), y2(n))
+        do ii = 1, n
+            x1(ii) = mesh%nodes(nodes1(ii), 1); y1(ii) = mesh%nodes(nodes1(ii), 2)
+            x2(ii) = mesh%nodes(nodes2(ii), 1); y2(ii) = mesh%nodes(nodes2(ii), 2)
+        end do
+
+        ! Compare physical coordinates to find match (plug and play for IGA knot spans)
+        if (all(abs(x1 - x2) < dp_EPSILON .and. abs(y1 - y2) < dp_EPSILON)) then
             orientation = 1
-            return
-        end if
-
-        ! Check for flipped orientation by comparing all nodes in the reversed sequence.
-        if (all(nodes1 == nodes2(n_nodes:1:-1))) then
+        else if (all(abs(x1 - x2(n:1:-1)) < dp_EPSILON .and. abs(y1 - y2(n:1:-1)) < dp_EPSILON)) then
             orientation = -1
-            return
         end if
 
+        deallocate(x1, y1, x2, y2)
     end function get_face_orientation
     
 end module

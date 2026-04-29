@@ -3,9 +3,16 @@ module m_asmg
     use m_types
     implicit none
     private
-    public :: derive_case_nametag, int_to_str, read_asmg_mesh
+    public :: read_asmg_mesh, derive_case_nametag, int_to_str
 
 contains
+
+    pure function int_to_str(ii) result(res)
+        integer, intent(in) :: ii
+        character(len=12) :: res
+        write(res, '(I0)') ii
+        res = adjustl(res)
+    end function int_to_str
 
     pure function derive_case_nametag(filename) result(tag)
         character(len=*), intent(in) :: filename
@@ -15,34 +22,25 @@ contains
         pos = index(filename, '/', back=.true.)
         if (pos == 0) pos = index(filename, '\', back=.true.)
 
-        if (pos > 0) then
-            tag = trim(filename(pos+1:))
-        else
-            tag = trim(filename)
-        end if
-
+        tag = filename(pos+1:)
         dot_pos = index(tag, '.', back=.true.)
+        
         if (dot_pos > 0) then
-            tag = tag(:dot_pos-1)
+            tag = tag(1:dot_pos-1) // ".vtk"
+        else
+            tag = tag // ".vtk"
         end if
     end function derive_case_nametag
-
-    pure function int_to_str(i) result(res)
-        integer, intent(in) :: i
-        character(len=12) :: res
-        write(res, '(I0)') i
-        res = adjustl(res)
-    end function int_to_str
-
+ 
     subroutine read_asmg_mesh(filepath, mesh)
         character(len=*), intent(in) :: filepath
         type(t_mesh), intent(inout) :: mesh
-        
-        integer :: unit, iostatus, i, j, k
+
+        integer :: unit, iostatus, ii, jj, k, p_idx, span_u, span_v, cp_idx
         real(dp) :: dummy_coord
         character(len=1024) :: line
-        integer :: patch_count, edge_count, p_count, poly_order
-        integer :: max_cp, max_knots, pos
+        integer :: patch_count, edge_count, p_count, poly_order, n_total_elems
+        integer :: max_cp, max_knots, pos, p, q
 
         open(newunit=unit, file=filepath, status='old', action='read')
         patch_count = 0; edge_count = 0; p_count = 0; poly_order = 0
@@ -56,14 +54,15 @@ contains
             if (index(line, '$2D_Patch_Description_Start') > 0) then
                 patch_count = patch_count + 1
             else if (index(line, 'PolyOrder') > 0) then
-                pos = index(line, ' ')
+                pos = index(line, 'PolyOrder') + 9
                 read(line(pos+1:), *) poly_order
             else if (index(line, '$1D_Patch_Description_Start') > 0) then
                 edge_count = edge_count + 1
             else if (index(line, 'POINTS') == 1) then
                 read(line(7:), *) p_count
-            else if (index(line, 'control_points:') == 1) then
-                read(line(16:), *) k
+            else if (index(line, 'control_points:') > 0) then
+                pos = index(line, ':')
+                read(line(pos+1:), *) k
                 if (k > max_cp) max_cp = k
             else if (index(line, 'KnotVector') > 0) then
                 pos = index(line, ':')
@@ -81,41 +80,36 @@ contains
             end if
         end do
 
-        mesh%n_elems = patch_count
-        mesh%n_nodes = p_count
-        mesh%n_edges = edge_count
-        mesh%nloc    = max_cp
-        mesh%order   = poly_order
-        mesh%dim     = 2
+        mesh%n_nodes   = p_count
+        mesh%n_patches = patch_count
+        mesh%n_edges   = edge_count
+        mesh%order     = poly_order
+        mesh%dim       = 2
+        mesh%n_cp_per_elem = (poly_order + 1)**2
+        mesh%n_faces_per_elem = 4
+        p = poly_order; q = poly_order
 
-        allocate(mesh%nodes(mesh%n_nodes, mesh%dim))
-        allocate(mesh%weights(mesh%n_nodes))
-        allocate(mesh%elems(mesh%n_elems, max_cp)); mesh%elems = 0
-        allocate(mesh%knot_vectors_xi(mesh%n_elems, max_knots)); mesh%knot_vectors_xi = 0.0_dp
-        allocate(mesh%knot_vectors_eta(mesh%n_elems, max_knots)); mesh%knot_vectors_eta = 0.0_dp
-        allocate(mesh%edge_knots(mesh%n_edges, max_knots)); mesh%edge_knots = 0.0_dp
-        allocate(mesh%material_ids(mesh%n_elems))
-        allocate(mesh%boundary_ids(mesh%n_edges))
-        allocate(mesh%edges(mesh%n_edges, max_cp)); mesh%edges = 0
-        allocate(mesh%span_range(4, mesh%n_elems)); mesh%span_range = 0.0_dp
+        allocate(mesh%nodes(mesh%n_nodes, mesh%dim), mesh%weights(mesh%n_nodes))
+        allocate(mesh%patch_cp_ids(patch_count, max_cp), mesh%patch_material_ids(patch_count))
+        allocate(mesh%patch_n_cp_xi(patch_count), mesh%patch_n_cp_eta(patch_count))
+        allocate(mesh%patch_n_knots_xi(patch_count), mesh%patch_n_knots_eta(patch_count))
+        allocate(mesh%patch_knot_vectors_xi(patch_count, max_knots), mesh%patch_knot_vectors_eta(patch_count, max_knots))
+        allocate(mesh%edge_n_cp_xi(edge_count), mesh%edge_n_knots_xi(edge_count))
+        allocate(mesh%edge_knot_vectors_xi(edge_count, max_knots))
+        allocate(mesh%edges(mesh%n_edges, max_cp), mesh%boundary_ids(mesh%n_edges))
 
-        allocate(mesh%n_cp_xi(mesh%n_elems), mesh%n_cp_eta(mesh%n_elems))
-        allocate(mesh%n_knots_xi_patch(mesh%n_elems), mesh%n_knots_eta_patch(mesh%n_elems))
-        allocate(mesh%n_cp_edge(mesh%n_edges), mesh%n_knots_edge(mesh%n_edges))
-        mesh%n_cp_xi = 0; mesh%n_cp_eta = 0; mesh%n_knots_xi_patch = 0; mesh%n_knots_eta_patch = 0
-        mesh%n_cp_edge = 0; mesh%n_knots_edge = 0
-                
+        mesh%patch_cp_ids = 0; mesh%patch_knot_vectors_xi = 0.0; mesh%patch_knot_vectors_eta = 0.0
+
         rewind(unit)
     
-        j = 0 ! 2D Patch counter
-        i = 0 ! 1D Patch counter
+        jj = 0 ! 2D Patch counter
+        ii = 0 ! 1D Patch counter
         
         do
             read(unit, '(A)', iostat=iostatus) line
             if (iostatus /= 0) exit
             line = adjustl(line)
 
-            ! Skip comments and empty lines at the top level
             if (len_trim(line) == 0 .or. line(1:1) == '!') cycle
 
             if (index(line, 'POINTS') == 1) then
@@ -124,26 +118,70 @@ contains
                 end do
 
             else if (index(line, '$1D_Patch_Description_Start') > 0) then
-                i = i + 1
-                call parse_patch_block(unit, mesh%edges(i,:), mesh%boundary_ids(i), .false., n_cp=mesh%n_cp_edge(i), &
-                                     out_knots_xi=mesh%edge_knots(i,:), n_k_xi=mesh%n_knots_edge(i))
+                ii = ii + 1
+                call parse_patch_block(unit, mesh%edges(ii,:), mesh%boundary_ids(ii), .false., &
+                    n_cp=mesh%edge_n_cp_xi(ii), out_knots_xi=mesh%edge_knot_vectors_xi(ii,:), &
+                    n_k_xi=mesh%edge_n_knots_xi(ii))
+            
 
             else if (index(line, '$2D_Patch_Description_Start') > 0) then
-                j = j + 1
-                call parse_patch_block(unit, mesh%elems(j,:), mesh%material_ids(j), &
-                                     .true., out_knots_xi=mesh%knot_vectors_xi(j,:), out_knots_eta=mesh%knot_vectors_eta(j,:), &
-                                     n_k_xi=mesh%n_knots_xi_patch(j), n_k_eta=mesh%n_knots_eta_patch(j))
-                mesh%n_cp_xi(j) = mesh%n_knots_xi_patch(j) - mesh%order - 1
-                mesh%n_cp_eta(j) = mesh%n_knots_eta_patch(j) - mesh%order - 1
-
-                mesh%span_range(1, j) = mesh%knot_vectors_xi(j, 1)
-                mesh%span_range(2, j) = mesh%knot_vectors_xi(j, mesh%n_knots_xi_patch(j))
-                mesh%span_range(3, j) = mesh%knot_vectors_eta(j, 1)
-                mesh%span_range(4, j) = mesh%knot_vectors_eta(j, mesh%n_knots_eta_patch(j))
+                jj = jj + 1
+                call parse_patch_block(unit, mesh%patch_cp_ids(jj,:), mesh%patch_material_ids(jj), .true., &
+                    out_knots_xi=mesh%patch_knot_vectors_xi(jj,:), out_knots_eta=mesh%patch_knot_vectors_eta(jj,:), &
+                    n_k_xi=mesh%patch_n_knots_xi(jj), n_k_eta=mesh%patch_n_knots_eta(jj))
+                mesh%patch_n_cp_xi(jj) = mesh%patch_n_knots_xi(jj) - p - 1
+                mesh%patch_n_cp_eta(jj) = mesh%patch_n_knots_eta(jj) - q - 1
             end if
         end do
         
         close(unit)
+
+        ! --- Subdivision into Knot Spans (Elements) ---
+        n_total_elems = 0
+        do p_idx = 1, patch_count
+            do span_u = 1, mesh%patch_n_knots_xi(p_idx)-1
+                if (mesh%patch_knot_vectors_xi(p_idx, span_u+1) > mesh%patch_knot_vectors_xi(p_idx, span_u) + dp_EPSILON) then
+                    do span_v = 1, mesh%patch_n_knots_eta(p_idx)-1
+                        if (mesh%patch_knot_vectors_eta(p_idx, span_v+1) > mesh%patch_knot_vectors_eta(p_idx, span_v) + dp_EPSILON) then
+                            n_total_elems = n_total_elems + 1
+                        end if
+                    end do
+                end if
+            end do
+        end do
+
+        mesh%n_elems = n_total_elems
+        allocate(mesh%elems(mesh%n_elems, (p+1)*(q+1)))
+        allocate(mesh%material_ids(mesh%n_elems), mesh%pin_ids(mesh%n_elems))
+        allocate(mesh%elem_u_min(mesh%n_elems), mesh%elem_u_max(mesh%n_elems))
+        allocate(mesh%elem_v_min(mesh%n_elems), mesh%elem_v_max(mesh%n_elems))
+        allocate(mesh%elem_patch_id(mesh%n_elems))
+
+        k = 0
+        do p_idx = 1, patch_count
+            do span_u = p + 1, mesh%patch_n_knots_xi(p_idx) - p - 1
+                if (mesh%patch_knot_vectors_xi(p_idx, span_u+1) <= mesh%patch_knot_vectors_xi(p_idx, span_u) + dp_EPSILON) cycle
+                do span_v = q + 1, mesh%patch_n_knots_eta(p_idx) - q - 1
+                    if (mesh%patch_knot_vectors_eta(p_idx, span_v+1) <= mesh%patch_knot_vectors_eta(p_idx, span_v) + dp_EPSILON) cycle
+                    
+                    k = k + 1
+                    mesh%elem_patch_id(k) = p_idx
+                    mesh%material_ids(k) = mesh%patch_material_ids(p_idx)
+                    mesh%elem_u_min(k)   = mesh%patch_knot_vectors_xi(p_idx, span_u)
+                    mesh%elem_u_max(k)   = mesh%patch_knot_vectors_xi(p_idx, span_u+1)
+                    mesh%elem_v_min(k)   = mesh%patch_knot_vectors_eta(p_idx, span_v)
+                    mesh%elem_v_max(k)   = mesh%patch_knot_vectors_eta(p_idx, span_v+1)
+
+                    cp_idx = 0
+                    do jj = span_v - q, span_v
+                        do ii = span_u - p, span_u
+                            cp_idx = cp_idx + 1
+                            mesh%elems(k, cp_idx) = mesh%patch_cp_ids(p_idx, (jj-1)*mesh%patch_n_cp_xi(p_idx) + ii)
+                        end do
+                    end do
+                end do
+            end do
+        end do
         
         call write_mesh_to_files(mesh)
 
@@ -211,9 +249,9 @@ contains
                 if (ios == 0 .and. n_val > 0) then
                     read(u, *, iostat=ios) (out_knots_xi(m), m=1, n_val)
                     if (present(n_k_xi)) n_k_xi = n_val
-                    if (is_2d .and. present(out_knots_eta)) then
-                        out_knots_eta(1:n_val) = out_knots_xi(1:n_val)
-                        if (present(n_k_eta)) n_k_eta = n_val
+                    if (is_2d .and. present(out_knots_eta) .and. present(n_k_eta)) then
+                         out_knots_eta(1:n_val) = out_knots_xi(1:n_val)
+                         n_k_eta = n_val
                     end if
                 end if
             end if
@@ -222,55 +260,51 @@ contains
 
     subroutine write_mesh_to_files(mesh)
         type(t_mesh), intent(in) :: mesh
-        integer :: u, i
+        integer :: u, ii
 
         ! 1. Export Nodes and Weights
         open(newunit=u, file='../output/nodes.dat', status='replace')
         write(u, '(A)') "# ID | X | Y | Weight"
-        do i = 1, mesh%n_nodes
-            write(u, '(I8, 3F15.8)') i, mesh%nodes(i,1), mesh%nodes(i,2), mesh%weights(i)
+        do ii = 1, mesh%n_nodes
+            write(u, '(I8, 3F15.8)') ii, mesh%nodes(ii,1), mesh%nodes(ii,2), mesh%weights(ii)
         end do
         close(u)
 
         ! 2. Export Elements (Control Points)
         open(newunit=u, file='../output/elements.dat', status='replace')
         write(u, '(A)') "# Element ID | Control Point IDs..."
-        do i = 1, mesh%n_elems
-            write(u, '(I8, " : ", 500I8)') i, pack(mesh%elems(i,:), mesh%elems(i,:) /= 0)
+        do ii = 1, mesh%n_elems
+            write(u, '(I8, " : ", 500I8)') ii, pack(mesh%elems(ii,:), mesh%elems(ii,:) /= 0)
         end do
         close(u)
 
         ! 3. Export Edges (1D Patches)
         open(newunit=u, file='../output/edges.dat', status='replace')
         write(u, '(A)') "# Edge ID | Boundary ID | Control Point IDs..."
-        do i = 1, mesh%n_edges
-            write(u, '(I8, " BC:", I4, " : ", 500I8)') i, mesh%boundary_ids(i), &
-                  pack(mesh%edges(i,:), mesh%edges(i,:) /= 0)
+        do ii = 1, mesh%n_edges
+            write(u, '(I8, " BC:", I4, " : ", 500I8)') ii, mesh%boundary_ids(ii), &
+                  pack(mesh%edges(ii,:), mesh%edges(ii,:) /= 0)
         end do
         close(u)
 
         ! 4. Export Materials and Pin IDs
         open(newunit=u, file='../output/materials.dat', status='replace')
         write(u, '(A)') "# Elem ID | Material ID"
-        do i = 1, mesh%n_elems
-            write(u, '(2I10)') i, mesh%material_ids(i)
+        do ii = 1, mesh%n_elems
+            write(u, '(2I10)') ii, mesh%material_ids(ii)
         end do
         close(u)
 
-        ! 5. Export Knot Vectors
-        open(newunit=u, file='../output/knot_vectors.dat', status='replace')
-        write(u, '(A)') "# Elem ID : KnotVectorXi | KnotVectorEta (2D Elements)"
-        do i = 1, mesh%n_elems
-            write(u, '(I8, " : ", 500F12.6, " | ", 500F12.6)') i, &
-                  pack(mesh%knot_vectors_xi(i,:), mesh%knot_vectors_xi(i,:) /= 0.0_dp), &
-                  pack(mesh%knot_vectors_eta(i,:), mesh%knot_vectors_eta(i,:) /= 0.0_dp)
-        end do
-        write(u, '(A)') "# Edge ID : KnotVector (1D Elements)"
-        do i = 1, mesh%n_edges
-            write(u, '(I8, " : ", 500F12.6)') i, &
-                  pack(mesh%edge_knots(i,:), mesh%edge_knots(i,:) /= 0.0_dp)
+        ! 5. Export Parametric Space
+        open(newunit=u, file='../output/knotspans.dat', status='replace')
+        write(u, '(A)') "# Elem ID | U_range | V_range"
+        do ii = 1, mesh%n_elems
+            write(u, '(1I10, 4F12.6)') ii, &
+                  mesh%elem_u_min(ii), mesh%elem_u_max(ii), &
+                  mesh%elem_v_min(ii), mesh%elem_v_max(ii)
         end do
         close(u)
+
     end subroutine write_mesh_to_files
 
 end module m_asmg

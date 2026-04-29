@@ -2,7 +2,7 @@ program fem2d_main
     use omp_lib
     use m_constants
     use m_types
-    use m_asmg, only: read_asmg_mesh, derive_case_nametag
+    use m_asmg, only: read_asmg_mesh, derive_case_nametag, int_to_str
     use m_quadrature, only: InitialiseQuadrature
     use m_basis, only: InitialiseBasis
     use m_sweep_order, only: InitialiseGeometry
@@ -13,7 +13,7 @@ program fem2d_main
     implicit none
 
     ! --- Data Arrays ---
-    real(dp), allocatable           :: angular_flux(:,:,:), scalar_flux(:,:), scalar_flux_old(:,:), total_src(:,:)
+    real(dp), allocatable           :: angular_flux(:,:,:), scalar_flux(:,:), scalar_flux_old(:,:), total_src(:,:), pin_powers(:)
 
     ! ---   Objects   ---
     type(t_mesh)                    :: mesh
@@ -33,12 +33,12 @@ program fem2d_main
     ! --- Configuration ---
     is_eigenvalue_problem  = .true.
     is_adjoint             = .false.
-    is_SEM                 = .false.
 
-    InputMesh              = "../input/pincell_test.asmg"
-    ref_ID                 = [3] !B=101,R=102,T=103,L=104
+    InputMesh              = "../input/dragon.asmg"!
+    ref_ID                 = [2] !B=101,R=102,T=103,L=104
     n_groups               = 7
 
+    FE%order               = 2
     QuadSn%order           = 16
 
     max_outer_iter          = 600
@@ -47,18 +47,19 @@ program fem2d_main
     t1 = omp_get_wtime()
 
     call read_asmg_mesh(InputMesh, mesh)
-    
-    ! Set FE%order immediately after mesh is read, as it's needed by InitialiseQuadrature
-    FE%order = mesh%order
 
-    call InitialiseQuadrature(FE, mesh, Quad1D, Quad2D, QuadSn, is_adjoint, is_SEM)
+    is_SEM = .false. ! IGA uses NURBS basis, SEM quadrature flags are irrelevant here
     call InitialiseBasis(FE, mesh)
+    call InitialiseQuadrature(FE, mesh, Quad1D, Quad2D, QuadSn, is_adjoint, is_SEM, boundary_order_plus=8)
     call InitialiseMaterials(materials, mesh, n_groups, "../input/MATS.txt", printout = .true.)
     call InitialiseGeometry(mesh, FE, QuadSn, sweep_order)
     call InitialiseTransport(mesh, FE, Quad2D, Quad1D, QuadSn, materials, n_groups)
 
-    allocate(angular_flux(mesh%n_elems * FE%n_basis, QuadSn%n_angles, n_groups), scalar_flux(mesh%n_elems * FE%n_basis, n_groups), scalar_flux_old(mesh%n_elems * FE%n_basis, n_groups), total_src(mesh%n_elems * FE%n_basis, n_groups))
-    k_eff = 1.0_dp; angular_flux = 0.0; scalar_flux = 0.001
+    allocate(angular_flux(mesh%n_elems * FE%n_basis, QuadSn%n_angles, n_groups), &
+             scalar_flux(mesh%n_elems * FE%n_basis, n_groups), &
+             scalar_flux_old(mesh%n_elems * FE%n_basis, n_groups), &
+             total_src(mesh%n_elems * FE%n_basis, n_groups))
+    k_eff = 1.0_dp; angular_flux = 0.0; scalar_flux = 0.0001_dp
 
     do outer_iter = 1, max_outer_iter
 
@@ -66,23 +67,21 @@ program fem2d_main
         scalar_flux_old = scalar_flux
 
         call Source_DGFEM(total_src, scalar_flux, k_eff_prime, materials, mesh, FE, n_groups, is_adjoint, is_eigenvalue_problem)
-        
-        if (outer_iter == 1) then
-            write(*,*) "Initial Source Max/Min:", maxval(total_src), minval(total_src)
-        end if
-
         call Transport_Sweep(mesh, FE, QuadSn, angular_flux, scalar_flux, total_src, sweep_order, n_groups, ref_ID)
+    
         flux_diff = maxval(abs(scalar_flux - scalar_flux_old))
     
         if (is_eigenvalue_problem) then
             call Calculate_Total_Production_DGFEM(total_prod_val, scalar_flux, materials, mesh, FE, n_groups, is_adjoint)
-            if (total_prod_val < dp_EPSILON) then
-                write(*,*) "FATAL: Production collapsed to zero. Check material properties and source."
-                stop
-            end if
             k_eff = total_prod_val * k_eff_prime
-            scalar_flux = scalar_flux / total_prod_val
-            write(*,'(A,I3,A,F12.8,A,ES12.4)') " Outer: ", outer_iter, " k: ", k_eff, " Diff: ", flux_diff
+            
+            if (total_prod_val > vsmall_number) then
+                scalar_flux = scalar_flux / total_prod_val
+            else
+                write(*,*) "Warning: Fission production dropped to zero. Iteration halted to prevent overflow."
+            end if
+
+            write(*,'(A,I3,A,F12.6,A,ES12.4)') " Outer: ", outer_iter, " k: ", k_eff, " Diff: ", flux_diff
             if (abs(k_eff - k_eff_prime)/k_eff < tol) exit
         else
             write(*,'(A,I3,A,ES12.4)') " Outer: ", outer_iter, " Diff: ", flux_diff
@@ -90,7 +89,7 @@ program fem2d_main
         end if
     end do
 
-    call export_dfem_vtk("../output/"//derive_case_nametag(InputMesh), mesh, FE, QuadSn, scalar_flux, n_groups, is_SEM, is_adjoint)
+    call export_dfem_vtk("../output/"//derive_case_nametag(InputMesh), mesh, FE, Quad1D, QuadSN, scalar_flux, n_groups, pin_powers, is_SEM, is_adjoint, refine_level_in=6)
     write(*,*) ">>> Simulation Complete."
 
     t2 = omp_get_wtime()

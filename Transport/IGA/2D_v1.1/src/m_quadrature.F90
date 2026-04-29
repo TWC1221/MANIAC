@@ -24,24 +24,31 @@ use m_types
 implicit none
 
 public :: t_quadrature, t_sn_quadrature
-public :: AngularQuadrature, LinearQuadrature, QuadrilateralQuadrature, HexahedralQuadrature, Spectral1DQuadrature, Spectral2DQuadrature
 
 contains
 
-subroutine InitialiseQuadrature(FE, mesh, Quad1D, Quad2D, QuadSn, is_adjoint, is_SEM)
-    type(t_quadrature), intent(inout)       :: Quad1D, Quad2D
+subroutine InitialiseQuadrature(FE, mesh, Quad1D, Quad, QuadSn, is_adjoint, is_SEM, boundary_order_plus)
+    type(t_quadrature), intent(inout)       :: Quad1D, Quad
     type(t_sn_quadrature), intent(inout)    :: QuadSn
-    type(t_finite), intent(in)              :: FE   
+    type(t_finite), intent(inout)              :: FE   
     type(t_mesh), intent(in)                :: mesh
-    logical, intent(in)                     :: is_adjoint
-    logical, intent(in)                     :: is_SEM
+    logical, intent(in)                     :: is_adjoint, is_SEM
+    integer, intent(in), optional           :: boundary_order_plus
+    integer :: b_order, v_order
+    type(t_quadrature) :: Quad1D_vol
+
+    v_order = FE%order + 1
+    b_order = v_order
+    if (present(boundary_order_plus)) b_order = b_order + boundary_order_plus
 
     if (is_SEM) then
-        call Spectral1DQuadrature(Quad1D, FE%order + 1)
-        call Spectral2DQuadrature(Quad2D, Quad1D)
+        call Spectral1DQuadrature(Quad1D, b_order)
+        call Spectral1DQuadrature(Quad1D_vol, v_order)
+        call Spectral2DQuadrature(Quad, Quad1D_vol)
     else
-        call LinearQuadrature(Quad1D, FE%order + 1)
-        call QuadrilateralQuadrature(Quad2D, FE%order + 1)
+        call LinearQuadrature(Quad1D, b_order)
+        call LinearQuadrature(Quad1D_vol, v_order)
+        call QuadrilateralQuadrature(Quad, v_order)
     end if
     call AngularQuadrature(mesh%dim, QuadSn%order, QuadSn, is_adjoint)
 

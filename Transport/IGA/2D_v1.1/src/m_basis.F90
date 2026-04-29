@@ -1,6 +1,5 @@
 module m_basis
     use m_constants
-    use m_quadrature
     use m_types
     implicit none
     public
@@ -9,53 +8,59 @@ module m_basis
 
     subroutine InitialiseBasis(FE, mesh)
         type(t_finite), intent(inout) :: FE
-        type(t_mesh), intent(in) :: mesh
-        integer :: i, p, ee, nx, ny
+        type(t_mesh),   intent(in)    :: mesh
+        integer :: i, j, p, q
 
-        FE%p_order = mesh%order
-        FE%q_order = mesh%order
-        p = mesh%order
-        FE%n_nodes_per_face = max(maxval(mesh%n_cp_xi), maxval(mesh%n_cp_eta))
-        FE%n_basis = mesh%nloc ! Synchronize basis with max control points per patch
+        p = FE%order; q = FE%order
+        FE%p_order = p; FE%q_order = q
+        FE%n_basis = (p + 1) * (q + 1)
+        FE%n_nodes_per_face = p + 1
 
-        allocate(FE%face_node_map(FE%n_nodes_per_face, 4, mesh%n_elems))
-        FE%face_node_map = 0
+        if (allocated(FE%face_node_map)) deallocate(FE%face_node_map)
+        allocate(FE%face_node_map(FE%n_nodes_per_face, 4))
 
-        do ee = 1, mesh%n_elems
-            nx = mesh%n_cp_xi(ee)
-            ny = mesh%n_cp_eta(ee)
-
-            ! Face 1: Bottom (v_min) - Nodes 1 to nx
-            do i = 1, nx; FE%face_node_map(i, 1, ee) = i; end do
-            ! Face 2: Right (u_max) - Nodes nx, 2nx, ..., ny*nx
-            do i = 1, ny; FE%face_node_map(i, 2, ee) = i * nx; end do
-            ! Face 3: Top (v_max) - Nodes (ny-1)*nx + 1 to ny*nx
-            do i = 1, nx; FE%face_node_map(i, 3, ee) = (ny - 1) * nx + i; end do
-            ! Face 4: Left (u_min) - Nodes 1, nx+1, ..., (ny-1)*nx+1
-            do i = 1, ny; FE%face_node_map(i, 4, ee) = (i - 1) * nx + 1; end do
+        ! Face Node Mapping (CCW Loop for Outward Normals)
+        do i = 1, p + 1 ! i is the local index along the face (1 to p+1)
+            ! Face 1: Bottom (eta = -1, xi from -1 to 1)
+            FE%face_node_map(i, 1) = i
+            ! Face 2: Right (xi = 1, eta from -1 to 1)
+            FE%face_node_map(i, 2) = (i - 1) * (p + 1) + (p + 1)
+            ! Face 3: Top (eta = 1, xi from 1 to -1)
+            FE%face_node_map(i, 3) = (q + 1) * (p + 1) - (i - 1)
+            ! Face 4: Left (xi = -1, eta from 1 to -1)
+            FE%face_node_map(i, 4) = (p + 1) * (q + 1 - i) + 1
         end do
     end subroutine InitialiseBasis
 
-    subroutine GetMapping(FE, ee, mesh, q, Quad, u1, u2, v1, v2, nodes, dN_dx, dN_dy, detJ, R, R_mat)
+    subroutine GetMapping2D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, elem_coords, dN_dx, dN_dy, detJ, R, R_mat, xi_custom, eta_custom, J_out)
         type(t_finite), intent(in)   :: FE
         integer, intent(in)          :: ee
         integer, intent(in)          :: q
         type(t_mesh), intent(in)     :: mesh
         type(t_quadrature), intent(in) :: Quad
         real(dp), intent(in)         :: u1, u2, v1, v2
-        real(dp), intent(in)         :: nodes(:,:) 
+        real(dp), intent(in)         :: elem_coords(:,:) 
         real(dp), intent(out)        :: dN_dx(:), dN_dy(:)
         real(dp), intent(out)        :: detJ, R(:)
         real(dp), optional, intent(out) :: R_mat(:,:)
+        real(dp), optional, intent(in)  :: xi_custom, eta_custom
+        real(dp), optional, intent(out) :: J_out(2,2)
 
-        real(dp) :: J(2,2), invJ(2,2), dRdXiEta(2, size(R)), detJ_param, detJ_phys
+        real(dp) :: J(2,2), invJ(2,2), dRdXiEta(2, size(R)), detJ_param, detJ_raw, detJ_abs
         real(dp) :: dR_dxi(size(R)), dR_deta(size(R))
-        real(dp) :: xi, eta
-        integer :: i
+        real(dp) :: xi, eta, xi_ref, eta_ref
 
-        ! Map from reference [-1,1] to knot span [u1, u2] x [v1, v2]
-        xi = 0.5_dp * ((u2 - u1) * Quad%xi(q) + (u2 + u1))
-        eta = 0.5_dp * ((v2 - v1) * Quad%eta(q) + (v2 + v1))
+        if (present(xi_custom) .and. present(eta_custom)) then
+            xi_ref = xi_custom
+            eta_ref = eta_custom
+        else
+            xi_ref = Quad%Xi(q)
+            eta_ref = Quad%Eta(q)
+        end if
+
+        ! Map from reference [-1,1] to patch parametric space [u1, u2]
+        xi  = 0.5_dp * ((u2 - u1) * xi_ref + (u2 + u1))
+        eta = 0.5_dp * ((v2 - v1) * eta_ref + (v2 + v1))
         detJ_param = 0.25_dp * (u2 - u1) * (v2 - v1)
 
         ! Evaluate NURBS basis functions and parametric derivatives
@@ -64,26 +69,36 @@ module m_basis
         ! Physical mapping Jacobian
         dRdXiEta(1, :) = dR_dxi
         dRdXiEta(2, :) = dR_deta
-        J = matmul(dRdXiEta(:, 1:mesh%n_cp_xi(ee)*mesh%n_cp_eta(ee)), nodes(1:mesh%n_cp_xi(ee)*mesh%n_cp_eta(ee), :))
+        J = matmul(dRdXiEta, elem_coords)
 
-        detJ_phys = (J(1,1)*J(2,2) - J(1,2)*J(2,1))
-        if (abs(detJ_phys) < 1e-15_dp) detJ_phys = sign(1e-15_dp, detJ_phys)
+        if (present(J_out)) J_out = J
 
-        detJ = detJ_phys * detJ_param
+        detJ_raw = (J(1,1)*J(2,2) - J(1,2)*J(2,1))
+        detJ     = detJ_raw * detJ_param ! This is the physical Jacobian determinant
+        detJ_abs = abs(detJ)
 
-        invJ(1,1) =  J(2,2) / detJ_phys
-        invJ(1,2) = -J(1,2) / detJ_phys
-        invJ(2,1) = -J(2,1) / detJ_phys
-        invJ(2,2) =  J(1,1) / detJ_phys
+        ! Detect inverted or degenerate elements
+        if (detJ < 0.0_dp) then
+            write(*,*) "CRITICAL: Inverted Jacobian at Elem:", ee, " q:", q, " detJ:", detJ
+            ! For now, we'll proceed, but this is a serious mesh error.
+        end if
+        if (detJ_abs < dp_EPSILON) then
+            write(*,*) "CRITICAL: Degenerate Jacobian at Elem:", ee, " q:", q, " detJ:", detJ
+            detJ_abs = dp_EPSILON ! Prevent division by zero, but indicates a bad element
+        end if
 
-        ! Apply inverse Jacobian transpose for gradient mapping
-        do i = 1, size(R)
-            dN_dx(i) = invJ(1,1) * dR_dxi(i) + invJ(1,2) * dR_deta(i)
-            dN_dy(i) = invJ(2,1) * dR_dxi(i) + invJ(2,2) * dR_deta(i)
-        end do
+        ! Compute inverse of physical Jacobian for chain rule
+        invJ(1,1) =  J(2,2) / detJ_raw ! Note: detJ_raw can be negative for inverted elements
+        invJ(1,2) = -J(1,2) / detJ_raw
+        invJ(2,1) = -J(2,1) / detJ_raw
+        invJ(2,2) =  J(1,1) / detJ_raw
+
+        ! Chain rule: dR/dx = dR/du * du/dx + dR/dv * dv/dx
+        dN_dx = (invJ(1,1) * dR_dxi + invJ(1,2) * dR_deta)
+        dN_dy = (invJ(2,1) * dR_dxi + invJ(2,2) * dR_deta)
 
         if (present(R_mat)) R_mat = spread(R, dim=2, ncopies=FE%n_basis) * spread(R, dim=1, ncopies=FE%n_basis)
-    end subroutine GetMapping
+    end subroutine GetMapping2D
 
     subroutine EvalNURBS2D(FE, ee, mesh, xi, eta, R, dR_dxi, dR_deta)
         type(t_finite), intent(in) :: FE
@@ -91,24 +106,25 @@ module m_basis
         type(t_mesh), intent(in) :: mesh
         real(dp), intent(in) :: xi, eta 
         real(dp), intent(out) :: R(:), dR_dxi(:), dR_deta(:)
-        integer :: p, q, span_xi, span_eta, i, j, idx
+        integer :: p, q, span_xi, span_eta, i, j, idx, p_idx
         real(dp) :: dN_xi(2, FE%p_order+1), dN_eta(2, FE%q_order+1)
         real(dp) :: W, dW_dxi, dW_deta, w_ij
         real(dp) :: invW, invW2
 
-        p = FE%p_order; q = FE%q_order
+        p = FE%p_order; q = FE%q_order; p_idx = mesh%elem_patch_id(ee)
         R = 0.0_dp; dR_dxi = 0.0_dp; dR_deta = 0.0_dp
 
-        call FindSpan(mesh%n_cp_xi(ee)-1, p, xi, mesh%knot_vectors_xi(ee, :), span_xi)
-        call FindSpan(mesh%n_cp_eta(ee)-1, q, eta, mesh%knot_vectors_eta(ee, :), span_eta)
-        call DersBasisFuns(span_xi, xi, p, 1, mesh%knot_vectors_xi(ee, :), dN_xi)
-        call DersBasisFuns(span_eta, eta, q, 1, mesh%knot_vectors_eta(ee, :), dN_eta)
+        call FindSpan(mesh%patch_n_cp_xi(p_idx)-1, p, xi, mesh%patch_knot_vectors_xi(p_idx, :), span_xi)
+        call FindSpan(mesh%patch_n_cp_eta(p_idx)-1, q, eta, mesh%patch_knot_vectors_eta(p_idx, :), span_eta)
+        call DersBasisFuns(span_xi, xi, p, 1, mesh%patch_knot_vectors_xi(p_idx, :), dN_xi)
+        call DersBasisFuns(span_eta, eta, q, 1, mesh%patch_knot_vectors_eta(p_idx, :), dN_eta)
 
         W = 0.0_dp; dW_dxi = 0.0_dp; dW_deta = 0.0_dp
+
+        idx = 0
         do j = 1, q + 1
             do i = 1, p + 1
-                idx = (span_eta - q + j - 2) * mesh%n_cp_xi(ee) + (span_xi - p + i - 1)
-
+                idx = idx + 1
                 w_ij = mesh%weights(mesh%elems(ee, idx))
                 W = W + dN_xi(1, i) * dN_eta(1, j) * w_ij
                 dW_dxi = dW_dxi + dN_xi(2, i) * dN_eta(1, j) * w_ij
@@ -119,51 +135,47 @@ module m_basis
         invW = 1.0_dp / W
         invW2 = invW * invW
 
+        idx = 0
         do j = 1, q + 1
             do i = 1, p + 1
-                idx = (span_eta - q + j - 2) * mesh%n_cp_xi(ee) + (span_xi - p + i - 1)
-                
+                idx = idx + 1
                 w_ij = mesh%weights(mesh%elems(ee, idx))
                 R(idx) = (dN_xi(1, i) * dN_eta(1, j) * w_ij) * invW
-                dR_dxi(idx) = ( (dN_xi(2, i) * dN_eta(1, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_dxi ) * invW2
-                dR_deta(idx) = ( (dN_xi(1, i) * dN_eta(2, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_deta ) * invW2
+                dR_dxi(idx) = ((dN_xi(2, i) * dN_eta(1, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_dxi) * invW2
+                dR_deta(idx) = ((dN_xi(1, i) * dN_eta(2, j) * w_ij) * W - (dN_xi(1, i) * dN_eta(1, j) * w_ij) * dW_deta) * invW2
             end do
         end do
     end subroutine EvalNURBS2D
 
-    subroutine EvalNURBS1D(FE, ee, mesh, xi, R, dR_dxi)
-        type(t_finite), intent(in) :: FE
-        integer, intent(in) :: ee ! edge index
-        type(t_mesh), intent(in) :: mesh
+    subroutine EvalNURBS1D(p, n_cp, knots, weights, xi, R, dR_dxi)
+        integer, intent(in) :: p, n_cp
+        real(dp), intent(in) :: knots(:), weights(:)
         real(dp), intent(in) :: xi
         real(dp), intent(out) :: R(:), dR_dxi(:)
-        integer :: p, span, i, idx
-        real(dp) :: dN(2, FE%p_order+1)
-        real(dp) :: W, dW_dxi, w_i
+        integer :: span, i
+        real(dp) :: dN(2, p+1)
+        real(dp) :: W, dW_dxi, w_local
         real(dp) :: invW, invW2
 
-        p = FE%p_order
         R = 0.0_dp; dR_dxi = 0.0_dp
 
-        call FindSpan(mesh%n_cp_edge(ee)-1, p, xi, mesh%edge_knots(ee, :), span)
-        call DersBasisFuns(span, xi, p, 1, mesh%edge_knots(ee, :), dN)
+        call FindSpan(n_cp-1, p, xi, knots, span)
+        call DersBasisFuns(span, xi, p, 1, knots, dN)
 
         W = 0.0_dp; dW_dxi = 0.0_dp
         do i = 1, p + 1
-            idx = span - p + i - 1
-            w_i = mesh%weights(mesh%edges(ee, idx))
-            W = W + dN(1, i) * w_i
-            dW_dxi = dW_dxi + dN(2, i) * w_i
+            w_local = weights(span - p + i - 1)
+            W = W + dN(1, i) * w_local
+            dW_dxi = dW_dxi + dN(2, i) * w_local
         end do
 
         invW = 1.0_dp / W
         invW2 = invW * invW
 
         do i = 1, p + 1
-            idx = span - p + i - 1
-            w_i = mesh%weights(mesh%edges(ee, idx))
-            R(idx) = (dN(1, i) * w_i) * invW
-            dR_dxi(idx) = ( (dN(2, i) * w_i) * W - (dN(1, i) * w_i) * dW_dxi ) * invW2
+            w_local = weights(span - p + i - 1)
+            R(i) = (dN(1, i) * w_local) * invW
+            dR_dxi(i) = ( (dN(2, i) * w_local) * W - (dN(1, i) * w_local) * dW_dxi ) * invW2
         end do
     end subroutine EvalNURBS1D
 

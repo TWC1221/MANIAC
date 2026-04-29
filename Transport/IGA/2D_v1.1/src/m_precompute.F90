@@ -14,37 +14,49 @@ module m_transport_precompute
             integer, intent(out) :: ipiv(*)
             integer, intent(out) :: info
         end subroutine dgetrf
+
+        subroutine dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
+            import :: dp
+            character, intent(in) :: trans
+            integer, intent(in) :: n, nrhs, lda, ldb
+            real(dp), intent(in) :: a(lda, *)
+            integer, intent(in) :: ipiv(*)
+            real(dp), intent(inout) :: b(ldb, *)
+            integer, intent(out) :: info
+        end subroutine dgetrs
     end interface
 
 contains
 
-    subroutine InitialiseTransport(mesh, FE, Quad2D, Quad1D, QuadSn, materials, n_groups)
+    subroutine InitialiseTransport(mesh, FE, Quad, QuadBound, sn_quad, materials, n_groups)
         type(t_mesh), intent(inout) :: mesh
         type(t_finite), intent(in) :: FE
-        type(t_quadrature), intent(in) :: Quad2D, Quad1D
-        type(t_sn_quadrature), intent(in) :: QuadSn
+        type(t_quadrature), intent(in) :: Quad, QuadBound
+        type(t_sn_quadrature), intent(in) :: sn_quad
         type(t_material), intent(in) :: materials(:)
         integer, intent(in) :: n_groups
 
         ! 1. Geometric Integrals Mass and Stiffness
-        call Precompute_Transport_Integrals(mesh, FE, Quad2D, Quad1D)
+        call Precompute_Transport_Integrals(mesh, FE, Quad, QuadBound)
         
         ! 2. Angle Mapping 
-        call Precompute_Reflective_Map(mesh, QuadSn)
+        call Precompute_Reflective_Map(mesh, sn_quad)
         
         ! 3. LU Factorization
-        call Precompute_All_Local_LU(mesh, FE, QuadSn, materials, n_groups)
+        call Precompute_All_Local_LU(mesh, FE, sn_quad, materials, n_groups)
         
+        ! 4. Verification
+        call Verify_Integrals(mesh, FE)
+
     end subroutine InitialiseTransport
 
-    subroutine Precompute_Transport_Integrals(mesh, FE, Quad2D, Quad1D)
+    subroutine Precompute_Transport_Integrals(mesh, FE, Quad, QuadBound)
         type(t_mesh), intent(inout) :: mesh
         type(t_finite), intent(in) :: FE
-        type(t_quadrature), intent(in) :: Quad2D, Quad1D
-        integer :: ee, q, i, j, f
+        type(t_quadrature), intent(in) :: Quad, QuadBound
+        integer :: ee, q, i, jj, f
         real(dp) :: nodes(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV
-        real(dp) :: R(FE%n_basis), dR_dxi(FE%n_basis), dR_deta(FE%n_basis)
-        real(dp) :: u_face, v_face, detJ_face, dx_dt, dy_dt, nx_dS, ny_dS
+        real(dp) :: R(FE%n_basis), dx_dxi, dy_dxi, xi_f, eta_f, temp_nx, temp_ny, len, J(2,2)
         real(dp) :: u1, u2, v1, v2
 
         allocate(mesh%elem_mass_matrix(FE%n_basis, FE%n_basis, mesh%n_elems), &
@@ -56,69 +68,120 @@ contains
         
         mesh%elem_mass_matrix = 0.0_dp; mesh%elem_stiffness_x = 0.0_dp; mesh%elem_stiffness_y = 0.0_dp
         mesh%face_mass_x = 0.0_dp; mesh%face_mass_y = 0.0_dp
-        mesh%face_normals = 0.0_dp
         mesh%basis_integrals_vol = 0.0_dp
 
-        !$OMP PARALLEL DO &
-        !$OMP PRIVATE(nodes, q, dN_dx, dN_dy, detJ, dV, i, j, f, R, u1, u2, v1, v2, &
-        !$OMP         u_face, v_face, detJ_face, dR_dxi, dR_deta, dx_dt, dy_dt, nx_dS, ny_dS)
         do ee = 1, mesh%n_elems
-            nodes = mesh%nodes(mesh%elems(ee, :), :)
-            u1 = mesh%span_range(1,ee); u2 = mesh%span_range(2,ee)
-            v1 = mesh%span_range(3,ee); v2 = mesh%span_range(4,ee)
-            do q = 1, Quad2D%n_points
-                call GetMapping(FE, ee, mesh, q, Quad2D, u1, u2, v1, v2, nodes, dN_dx, dN_dy, detJ, R)
-                dV = detJ * Quad2D%weights(q)
-                mesh%elem_mass_matrix(:,:,ee)     = mesh%elem_mass_matrix(:,:,ee)     + spread(R,2,FE%n_basis) * spread(R,1,FE%n_basis) * dV
-                mesh%elem_stiffness_x(:,:,ee)     = mesh%elem_stiffness_x(:,:,ee)     + spread(dN_dx,2,FE%n_basis)    * spread(R,1,FE%n_basis) * dV
-                mesh%elem_stiffness_y(:,:,ee)     = mesh%elem_stiffness_y(:,:,ee)     + spread(dN_dy,2,FE%n_basis)    * spread(R,1,FE%n_basis) * dV
+            nodes = mesh%nodes(mesh%elems(ee, 1:FE%n_basis), :)
+            u1 = mesh%elem_u_min(ee); u2 = mesh%elem_u_max(ee)
+            v1 = mesh%elem_v_min(ee); v2 = mesh%elem_v_max(ee)
+
+            do q = 1, Quad%n_points
+                call GetMapping2D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, nodes, dN_dx, dN_dy, detJ, R)
+                dV = detJ * Quad%weights(q)
+                mesh%elem_mass_matrix(:,:,ee)     = mesh%elem_mass_matrix(:,:,ee)     + spread(R, 2, FE%n_basis) * spread(R, 1, FE%n_basis) * dV
+                mesh%elem_stiffness_x(:,:,ee)     = mesh%elem_stiffness_x(:,:,ee)     + spread(dN_dx, 2, FE%n_basis) * spread(R, 1, FE%n_basis) * dV
+                mesh%elem_stiffness_y(:,:,ee)     = mesh%elem_stiffness_y(:,:,ee)     + spread(dN_dy, 2, FE%n_basis) * spread(R, 1, FE%n_basis) * dV
                 mesh%basis_integrals_vol(:,ee)    = mesh%basis_integrals_vol(:,ee)    + R * dV
             end do
+            
             do f = 1, mesh%n_faces_per_elem
-                do q = 1, Quad1D%n_points
+                ! Initialize temporary normal components for this face
+                temp_nx = 0.0_dp
+                temp_ny = 0.0_dp
+                do q = 1, QuadBound%n_points
+                    ! Evaluate actual NURBS basis on the face coordinates
                     select case(f)
-                    case(1); u_face = 0.5_dp*((u2-u1)*Quad1D%xi(q)+(u2+u1)); v_face = v1; detJ_face = 0.5_dp*(u2-u1)
-                    case(2); u_face = u2; v_face = 0.5_dp*((v2-v1)*Quad1D%xi(q)+(v2+v1)); detJ_face = 0.5_dp*(v2-v1)
-                    case(3); u_face = 0.5_dp*((u2-u1)*Quad1D%xi(q)+(u2+u1)); v_face = v2; detJ_face = 0.5_dp*(u2-u1)
-                    case(4); u_face = u1; v_face = 0.5_dp*((v2-v1)*Quad1D%xi(q)+(v2+v1)); detJ_face = 0.5_dp*(v2-v1)
+                        case(1); xi_f = QuadBound%xi(q); eta_f = -1.0_dp
+                        case(2); xi_f = 1.0_dp;          eta_f = QuadBound%xi(q)
+                        case(3); xi_f = -QuadBound%xi(q); eta_f = 1.0_dp
+                        case(4); xi_f = -1.0_dp;         eta_f = -QuadBound%xi(q)
                     end select
-                    
-                    call EvalNURBS2D(FE, ee, mesh, u_face, v_face, R, dR_dxi, dR_deta)
-                    
-                    if (f == 1 .or. f == 3) then
-                        dx_dt = dot_product(dR_dxi, nodes(:,1))
-                        dy_dt = dot_product(dR_dxi, nodes(:,2))
-                    else
-                        dx_dt = dot_product(dR_deta, nodes(:,1))
-                        dy_dt = dot_product(dR_deta, nodes(:,2))
-                    end if
 
-                    ! Ensure outward normal components match m_sweep_order logic
-                    if (f == 1 .or. f == 2) then
-                        nx_dS =  dy_dt * detJ_face * Quad1D%weights(q)
-                        ny_dS = -dx_dt * detJ_face * Quad1D%weights(q)
-                    else ! f == 3 .or. f == 4
-                        nx_dS = -dy_dt * detJ_face * Quad1D%weights(q)
-                        ny_dS =  dx_dt * detJ_face * Quad1D%weights(q)
-                    end if
+                    ! Evaluate physical metrics at the boundary point via the 2D Jacobian
+                    call GetMapping2D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, nodes, dN_dx, dN_dy, detJ, R, &
+                                     xi_custom=xi_f, eta_custom=eta_f, J_out=J)
 
-                    mesh%face_normals(1, f, ee) = mesh%face_normals(1, f, ee) + nx_dS
-                    mesh%face_normals(2, f, ee) = mesh%face_normals(2, f, ee) + ny_dS
-                    
+                    ! Scale tangent components [dx/dxi_ref, dy/dxi_ref] for the parametric span.
+                    ! Negation for faces 3 and 4 ensures a consistent CCW path for outward normals.
+                    select case(f)
+                        case(1); dx_dxi =  J(1,1)*0.5_dp*(u2-u1); dy_dxi =  J(1,2)*0.5_dp*(u2-u1)
+                        case(2); dx_dxi =  J(2,1)*0.5_dp*(v2-v1); dy_dxi =  J(2,2)*0.5_dp*(v2-v1)
+                        case(3); dx_dxi = -J(1,1)*0.5_dp*(u2-u1); dy_dxi = -J(1,2)*0.5_dp*(u2-u1)
+                        case(4); dx_dxi = -J(2,1)*0.5_dp*(v2-v1); dy_dxi = -J(2,2)*0.5_dp*(v2-v1)
+                    end select
+
+                    ! Accumulate normal components for averaging
+                    temp_nx = temp_nx + dy_dxi * QuadBound%weights(q)
+                    temp_ny = temp_ny - dx_dxi * QuadBound%weights(q)
+
                     do i = 1, FE%n_basis
-                        do j = 1, FE%n_basis
-                            mesh%face_mass_x(i,j,f,ee) = mesh%face_mass_x(i,j,f,ee) + R(i)*R(j) * nx_dS
-                            mesh%face_mass_y(i,j,f,ee) = mesh%face_mass_y(i,j,f,ee) + R(i)*R(j) * ny_dS
+                        do jj = 1, FE%n_basis
+                            mesh%face_mass_x(i,jj,f,ee) = mesh%face_mass_x(i,jj,f,ee) + R(i) * R(jj) * dy_dxi * QuadBound%weights(q)
+                            mesh%face_mass_y(i,jj,f,ee) = mesh%face_mass_y(i,jj,f,ee) - R(i) * R(jj) * dx_dxi * QuadBound%weights(q)
                         end do
                     end do
-                end do
-                ! Normalize to unit vector
-                detJ_face = sqrt(mesh%face_normals(1,f,ee)**2 + mesh%face_normals(2,f,ee)**2)
-                mesh%face_normals(1, f, ee) = mesh%face_normals(1, f, ee) / detJ_face
-                mesh%face_normals(2, f, ee) = mesh%face_normals(2, f, ee) / detJ_face
+                end do ! end q loop
+                ! Normalize and store the average face normal
+                len = sqrt(temp_nx**2 + temp_ny**2)
+                if (len > dp_EPSILON) then
+                    mesh%face_normals(:, f, ee) = [temp_nx, temp_ny] / len
+                end if
             end do
         end do
     end subroutine Precompute_Transport_Integrals
+
+    subroutine Verify_Integrals(mesh, FE)
+        type(t_mesh), intent(in) :: mesh
+        type(t_finite), intent(in) :: FE
+        integer :: ee, f
+        real(dp) :: vol, stiffness_err_x, stiffness_err_y, net_face_x, net_face_y, symmetry_err
+        logical :: passed
+
+        passed = .true.
+        do ee = 1, mesh%n_elems
+            ! 1. Volume Check
+            vol = sum(mesh%basis_integrals_vol(:, ee))
+            if (vol <= 0.0_dp) then
+                write(*,*) "[ERROR] Element", ee, "has non-positive volume:", vol
+                passed = .false.
+            end if
+
+            if (any(mesh%basis_integrals_vol(:, ee) < 0.0_dp)) then
+                 write(*,*) "[ERROR] Element", ee, "is inverted (Negative volume). Check node ordering."
+                 passed = .false.
+            end if
+
+            ! Check for negative volume integrals (indicates inverted element)
+            if (any(mesh%basis_integrals_vol(:, ee) < 0.0_dp)) then
+                 write(*,*) "[ERROR] Element", ee, "is inverted (Negative volume). Check node ordering."
+                 passed = .false.
+            end if
+
+            ! 2. Stiffness Sum Check (Weak Form: sum over test functions [dim=1] must be zero)
+            stiffness_err_x = maxval(abs(sum(mesh%elem_stiffness_x(:, :, ee), dim=1)))
+            stiffness_err_y = maxval(abs(sum(mesh%elem_stiffness_y(:, :, ee), dim=1)))
+
+            ! 3. Divergence Theorem Check (Closed loop integral of normals = 0)
+            net_face_x = sum(mesh%face_mass_x(:, :, :, ee))
+            net_face_y = sum(mesh%face_mass_y(:, :, :, ee))
+
+            ! 4. Symmetry Check for Mass Matrix
+            symmetry_err = maxval(abs(mesh%elem_mass_matrix(:,:,ee) - transpose(mesh%elem_mass_matrix(:,:,ee))))
+
+            if (max(stiffness_err_x, stiffness_err_y) > 1e-10_dp) then
+                write(*,*) "[WARNING] Elem", ee, "Stiffness Consistency Error:", max(stiffness_err_x, stiffness_err_y)
+            end if
+            if (max(abs(net_face_x), abs(net_face_y)) > 1e-10_dp) then
+                write(*,*) "[ERROR] Elem", ee, "Boundary Closure Error (Normal check):", net_face_x, net_face_y
+                passed = .false.
+            end if
+            if (symmetry_err > 1e-12_dp) then
+                write(*,*) "[WARNING] Elem", ee, "Mass Matrix Symmetry Error:", symmetry_err
+            end if
+        end do
+
+        if (passed) write(*,*) ">>> Geometric Integrals Verified Successfully."
+    end subroutine Verify_Integrals
 
     subroutine Precompute_Reflective_Map(mesh, sn_quad)
         type(t_mesh), intent(inout) :: mesh
@@ -136,9 +199,11 @@ contains
                 do mm = 1, sn_quad%n_angles
                     dir = sn_quad%dirs(mm, :)
                     ref_dir = dir - 2.0_dp * dot_product(dir, normal) * normal
-                    max_dot = -1.0_dp
+                    ! Prioritize angles with similar polar component (dir_z)
+                    max_dot = -2.0_dp ! Initialize with a very low value
                     do m_iter = 1, sn_quad%n_angles
-                        dprod = dot_product(ref_dir, sn_quad%dirs(m_iter, :))
+                        dprod = dot_product(ref_dir, sn_quad%dirs(m_iter, :)) - &
+                                0.1_dp * abs(ref_dir(3) - sn_quad%dirs(m_iter, 3)) ! Penalty for different polar level
                         if (dprod > max_dot) then
                             max_dot = dprod
                             mesh%reflect_map(mm, f, ee) = m_iter
@@ -155,39 +220,31 @@ contains
         type(t_sn_quadrature), intent(in) :: sn_quad
         type(t_material), intent(in) :: materials(:)
         integer, intent(in) :: n_groups
-        integer :: ee, mm, g, f, info, i, ncp_ee
+        integer :: ee, mm, g, f, info
         real(dp) :: A(FE%n_basis, FE%n_basis), dir(2), o_n
 
         allocate(mesh%local_lu(FE%n_basis, FE%n_basis, mesh%n_elems, sn_quad%n_angles, n_groups), &
                  mesh%local_pivots(FE%n_basis, mesh%n_elems, sn_quad%n_angles, n_groups))
 
-        !$OMP PARALLEL DO PRIVATE(mm, dir, ee, g, A, f, o_n, info, i, ncp_ee) SCHEDULE(DYNAMIC)
         do mm = 1, sn_quad%n_angles
             dir = sn_quad%dirs(mm, 1:2)
             do ee = 1, mesh%n_elems
-                ncp_ee = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee)
                 do g = 1, n_groups
+                    ! Matrix A = [Sigma_t * Mass] - [Omega . Stiffness] + [Outflow Face Terms]
                     A = materials(mesh%material_ids(ee))%SigmaT(g) * mesh%elem_mass_matrix(:,:,ee) - &
                         (dir(1)*mesh%elem_stiffness_x(:,:,ee) + dir(2)*mesh%elem_stiffness_y(:,:,ee))
+                    
                     do f = 1, mesh%n_faces_per_elem
-                        o_n = dot_product(dir, mesh%face_normals(:, f, ee))
+                        ! Integrated dot product check for outflow
+                        o_n = dir(1)*sum(mesh%face_mass_x(:,:,f,ee)) + &
+                              dir(2)*sum(mesh%face_mass_y(:,:,f,ee))
                         if (o_n > 0.0_dp) A = A + (dir(1)*mesh%face_mass_x(:,:,f,ee) + dir(2)*mesh%face_mass_y(:,:,f,ee))
                     end do
-
-                    ! Safety: Pad unused basis functions to prevent singular matrices
-                    do i = ncp_ee + 1, FE%n_basis
-                        A(i, i) = 1.0_dp
-                    end do
-
+                    
                     call dgetrf(FE%n_basis, FE%n_basis, A, FE%n_basis, mesh%local_pivots(:,ee,mm,g), info)
                     
                     if (info /= 0) then
                         write(*,*) "FATAL: LU Factorization failed (Singular Matrix) in Elem:", ee, " Angle:", mm
-                        stop
-                    end if
-
-                    if (any(A /= A)) then
-                        write(*,*) "FATAL: NaN detected in LU Factors. Elem:", ee, " Angle:", mm, " Group:", g
                         stop
                     end if
 

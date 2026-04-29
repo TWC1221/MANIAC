@@ -12,25 +12,21 @@ module m_transport
     public :: Transport_Sweep, Calculate_Total_Production_DGFEM, Source_DGFEM
 
     interface
-        subroutine dgetrs(trans, n, nrhs, a, lda, ipiv, b, ldb, info)
-            import :: dp
-            character, intent(in) :: trans
+        subroutine dgesv(n, nrhs, a, lda, ipiv, b, ldb, info)
             integer, intent(in) :: n, nrhs, lda, ldb
-            real(dp), intent(in) :: a(lda, *)
-            integer, intent(in) :: ipiv(*)
-            real(dp), intent(inout) :: b(ldb, *)
-            integer, intent(out) :: info
-        end subroutine dgetrs
+            integer, intent(out) :: ipiv(n), info
+            real(8), intent(inout) :: a(lda,n), b(ldb,nrhs)
+        end subroutine dgesv
     end interface
 
 contains
 
-    subroutine Transport_Sweep(mesh, FE, QuadSn, angular_flux, scalar_flux, total_src, sweep_order, n_groups, ref_ID)
+    subroutine Transport_Sweep(mesh, FE, sn_quad, ang_flux, scalar_flux, total_source, sweep_order, n_groups, ref_ID)
         type(t_mesh), intent(in) :: mesh
         type(t_finite), intent(in) :: FE
-        type(t_sn_quadrature), intent(in) :: QuadSn
-        real(dp), intent(inout) :: angular_flux(:,:,:), scalar_flux(:,:)
-        real(dp), intent(in) :: total_src(:,:)
+        type(t_sn_quadrature), intent(in) :: sn_quad
+        real(dp), intent(inout) :: ang_flux(:,:,:), scalar_flux(:,:)
+        real(dp), intent(in) :: total_source(:,:)
         integer, intent(in) :: sweep_order(:,:), ref_ID(:), n_groups
 
         integer :: mm, ee, ie, g, f, m_ref, info
@@ -41,15 +37,8 @@ contains
         ! Reset scalar flux
         scalar_flux = 0.0_dp
 
-        if (any(total_src /= total_src)) then
-            write(*,*) "ERROR: NaN detected in total_src at start of Transport_Sweep"
-            stop
-        end if
-
-        !$OMP PARALLEL DO SCHEDULE(DYNAMIC) &
-        !$OMP& PRIVATE(mm, dir, ee, ie, g, b, f, o_n, neighbor_elem_id, i_face_node, i_basis, upwind_dof_idx, local_dof_idx, m_ref, info, neighbor_flux, idx_start, idx_end)
-        do mm = 1, QuadSn%n_angles
-            dir = QuadSn%dirs(mm, 1:2)
+        do mm = 1, sn_quad%n_angles
+            dir = sn_quad%dirs(mm, 1:2)
             
             do ee = 1, mesh%n_elems
                 ie = sweep_order(ee, mm)
@@ -58,74 +47,50 @@ contains
                 idx_end   = ie*FE%n_basis
 
                 do g = 1, n_groups
-                    ! 1. Load Source
-                    b = total_src(idx_start:idx_end, g)
+                    b = total_source(idx_start:idx_end, g)
 
-                    ! 2. Assembly of Incoming Fluxes
                     do f = 1, mesh%n_faces_per_elem
-                        o_n = dot_product(dir, mesh%face_normals(:, f, ie))
+                        ! Check if the integrated dot-product (Omega . n) is negative for inflow
+                        ! The face_mass_x/y matrices already contain the normal components (nx*dS, ny*dS)
+                        o_n = dir(1)*sum(mesh%face_mass_x(:, :, f, ie)) + &
+                              dir(2)*sum(mesh%face_mass_y(:, :, f, ie))
                         
                         if (o_n < 0.0_dp) then
                             neighbor_elem_id = mesh%face_connectivity(1, f, ie)
-                            m_ref = mm
-                            
-                            ! Determine if we use internal neighbor flux or reflective boundary flux
-                            if (neighbor_elem_id <= 0) then
-                                if (any(mesh%face_connectivity(4, f, ie) == ref_ID)) then
-                                    m_ref = mesh%reflect_map(mm, f, ie)
-                                else
-                                    cycle ! Vacuum boundary (flux is zero)
-                                end if
-                            end if
-
-                            do i_face_node = 1, FE%n_nodes_per_face
-                                local_dof_idx = FE%face_node_map(i_face_node, f, ie)
-                                if (local_dof_idx == 0) exit
-                                
-                                if (neighbor_elem_id > 0) then
+                            if (neighbor_elem_id > 0) then 
+                                do i_face_node = 1, FE%n_nodes_per_face
                                     upwind_dof_idx = mesh%upwind_idx(i_face_node, f, ie)
-                                else
-                                    ! Reflective: fetch from current element's DOFs at reflected angle
-                                    upwind_dof_idx = (ie - 1) * FE%n_basis + local_dof_idx
-                                end if
-                                
-                                neighbor_flux = angular_flux(upwind_dof_idx, m_ref, g)
-                                
-                                ! Owen 2016: Subtract inflow face integral from residual (b = b - M_face * psi_upwind)
-                                ! Since o_n < 0, this effectively adds the positive contribution to the RHS.
-                                b = b - neighbor_flux * (dir(1)*mesh%face_mass_x(:, local_dof_idx, f, ie) + &
-                                                             dir(2)*mesh%face_mass_y(:, local_dof_idx, f, ie))
-                            end do
+                                    neighbor_flux = ang_flux(upwind_dof_idx, mm, g)
+                                    b = b - neighbor_flux * (dir(1)*mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie) + &
+                                                             dir(2)*mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie))
+                                end do
+                            else if (any(mesh%face_connectivity(4, f, ie) == ref_ID)) then 
+                                m_ref = mesh%reflect_map(mm, f, ie)
+                                do i_face_node = 1, FE%n_nodes_per_face
+                                    local_dof_idx = idx_start - 1 + FE%face_node_map(i_face_node, f)
+                                    neighbor_flux = ang_flux(local_dof_idx, m_ref, g)
+                                    b = b - neighbor_flux * (dir(1)*mesh%face_mass_x(:, FE%face_node_map(i_face_node, f), f, ie) + &
+                                                             dir(2)*mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie))
+                                end do
+                            end if
                         end if
                     end do
 
                     ! 3. Precomputed Solve
                     call dgetrs('N', FE%n_basis, 1, mesh%local_lu(:,:,ie,mm,g), &
                                 FE%n_basis, mesh%local_pivots(:,ie,mm,g), b, FE%n_basis, info)
-                    
-                    if (info /= 0) then
-                        write(*,*) "Error: LU Solve failed in Transport_Sweep. Elem:", ie, " Angle:", mm
-                        stop
-                    end if
-
-                    if (any(b /= b)) then
-                        write(*,*) "ERROR: NaN produced after LU Solve. Elem:", ie, " Angle:", mm, " Group:", g
-                        stop
-                    end if
 
                     ! 4. Store
-                    angular_flux(idx_start:idx_end, mm, g) = b
+                    ang_flux(idx_start:idx_end, mm, g) = b
                     
                     ! 5. Update Scalar Flux (Vector atomic update)
                     do i_basis = 1, FE%n_basis
                         local_dof_idx = idx_start + i_basis - 1
-                        !$OMP ATOMIC
-                        scalar_flux(local_dof_idx, g) = scalar_flux(local_dof_idx, g) + QuadSn%weights(mm) * b(i_basis)
+                        scalar_flux(local_dof_idx, g) = scalar_flux(local_dof_idx, g) + sn_quad%weights(mm) * b(i_basis)
                     end do
                 end do
             end do 
         end do
-        !$OMP END PARALLEL DO
     end subroutine Transport_Sweep
 
     subroutine Source_DGFEM(total_src, scalar_flux, k_eff, materials, mesh, FE, n_groups, is_adjoint, is_eigenvalue)
@@ -144,9 +109,6 @@ contains
         integer :: idx_start, idx_end
 
         total_src = 0.0_dp
-        !$OMP PARALLEL DO DEFAULT(NONE) &
-        !$OMP SHARED(mesh, FE, n_groups, materials, scalar_flux, total_src, k_eff, is_adjoint, is_eigenvalue) &
-        !$OMP PRIVATE(ee, mat_id, g_to, M_phi, idx_start, idx_end)
         do ee = 1, mesh%n_elems
             mat_id    = mesh%material_ids(ee)
             idx_start = (ee - 1) * FE%n_basis + 1
@@ -162,11 +124,6 @@ contains
             
             end do
         end do
-
-        if (any(total_src /= total_src)) then
-            write(*,*) "DEBUG: NaN detected in Source_DGFEM output."
-        end if
-
     end subroutine Source_DGFEM
 
     subroutine Calculate_Total_Production_DGFEM(total_prod, scalar_flux, materials, mesh, FE, n_groups, is_adjoint)
@@ -182,10 +139,6 @@ contains
         integer                         :: idx_start, idx_end
 
         total_prod = 0.0_dp
-        !$OMP PARALLEL DO DEFAULT(NONE)                                      &
-        !$OMP SHARED(mesh, FE, n_groups, materials, scalar_flux, is_adjoint) &
-        !$OMP PRIVATE(ee, mat_id, g, idx_start, idx_end)          &
-        !$OMP REDUCTION(+:total_prod)
         do ee = 1, mesh%n_elems
             mat_id = mesh%material_ids(ee)
             idx_start = (ee - 1) * FE%n_basis + 1
@@ -195,7 +148,6 @@ contains
                 total_prod = total_prod + merge(materials(mat_id)%NuSigF(g),materials(mat_id)%Chi(g),.not. is_adjoint) * dot_product(scalar_flux(idx_start:idx_end, g), mesh%basis_integrals_vol(:, ee))
             end do
         end do
-        !$OMP END PARALLEL DO
     end subroutine Calculate_Total_Production_DGFEM
 
 end module m_transport

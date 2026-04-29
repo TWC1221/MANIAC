@@ -1,46 +1,54 @@
 module m_outpVTK_dfem
     use m_constants
     use m_types
-    use m_basis !**
-    use m_asmg 
+    use m_basis
+    use m_asmg, only: derive_case_nametag, int_to_str
     use m_material
     use m_quadrature
     implicit none
     private
     public :: export_dfem_vtk
 
-
 contains
 
-    subroutine export_dfem_vtk(filename, mesh, FE, QuadSn, scalar_flux, n_groups, is_SEM, is_adjoint)
+    subroutine export_dfem_vtk(filename, mesh, FE, Quad, QuadSN, XPETSc, NGRP, PinPowers, is_SEM, is_adjoint, refine_level_in)
         character(len=*), intent(in) :: filename
         type(t_mesh),     intent(in) :: mesh
         type(t_finite),   intent(in) :: FE
-        type(t_sn_quadrature), intent(in) :: QuadSn
-        real(dp),         intent(in) :: scalar_flux(:,:) 
-        integer,          intent(in) :: n_groups
+        type(t_quadrature), intent(in) :: Quad
+        type(t_sn_quadrature), intent(in) :: QuadSN
+        real(dp),         intent(in) :: XPETSc(:,:) 
+        integer,          intent(in) :: NGRP
         logical,          intent(in) :: is_SEM, is_adjoint
+        real(dp), intent(in), optional :: PinPowers(0:)
+        integer,  intent(in), optional :: refine_level_in
 
-        integer :: ee, g, i, j, unit_v
+        integer :: ee, g, ii, jj, unit_v
         integer :: nbasis, npts_elem, ncells_elem
         integer :: n_sub_nodes, n_sub_elems
         integer :: gid, cid, basep, p
         integer :: refine_level
-        integer :: ncp_active
+        real(dp) :: u1, u2, v1, v2, xi_val, eta_val, dR_dxi(FE%n_basis), dR_deta(FE%n_basis), detJ
+        real(dp) :: dN_dx(FE%n_basis), dN_dy(FE%n_basis), nodes_e(FE%n_basis, 2)
 
-        real(dp) :: u1, u2, v1, v2, u_val, v_val
         real(dp), allocatable :: xi_grid(:), eta_grid(:)
-        real(dp), allocatable :: N_eval(:), reordered_coords(:,:), dR_dxi(:), dR_deta(:)
-        real(dp), allocatable :: Xp(:,:), Up(:,:)
+        real(dp), allocatable :: N_eval(:), mesh_coords(:,:)
+        real(dp), allocatable :: Xp(:,:), Up(:,:), Jp(:)
         integer,  allocatable :: Cells(:,:)
 
         integer :: n00, n10, n11, n01
         character(len=1024) :: full_path, adj, sem
+        integer :: slash_idx
+
+        call execute_command_line("mkdir -p " // trim(filename))
 
         ! --- N-Order Logic ---
         p            = FE%order
-        ! For p=2 (9-node), refine_level=3. For p=3 (16-node), refine_level=4.
-        refine_level = p + 1   
+        if (present(refine_level_in)) then
+            refine_level = refine_level_in
+        else
+            refine_level = p + 1
+        end if
         nbasis       = FE%n_basis
         npts_elem    = refine_level**2
         ncells_elem  = (refine_level-1)**2
@@ -48,49 +56,56 @@ contains
         n_sub_elems  = mesh%n_elems * ncells_elem
 
         allocate(xi_grid(refine_level), eta_grid(refine_level))
-        allocate(N_eval(nbasis), reordered_coords(nbasis, 2), dR_dxi(nbasis), dR_deta(nbasis))
-        allocate(Xp(n_sub_nodes, 3), Up(n_sub_nodes, n_groups))
-        allocate(Cells(n_sub_elems, 4))
+        allocate(N_eval(nbasis), mesh_coords(nbasis, size(mesh%nodes, 2)))
+        allocate(Xp(n_sub_nodes, 3), Up(n_sub_nodes, NGRP))
+        allocate(Cells(n_sub_elems, 4), Jp(n_sub_elems))
 
         ! Define interpolation coordinates in reference space [-1, 1]
-        do i = 1, refine_level
-            xi_grid(i)  = -1.0_dp + 2.0_dp * real(i-1, dp) / real(p, dp)
-            eta_grid(i) = xi_grid(i)
+        do ii = 1, refine_level
+            xi_grid(ii)  = -1.0_dp + 2.0_dp * real(ii-1, dp) / real(refine_level - 1, dp)
+            eta_grid(ii) = xi_grid(ii)
         end do
 
         ! 1. Interpolate geometry and solution to the sub-grid
         gid = 0
+        cid = 0
         do ee = 1, mesh%n_elems
             basep = (ee-1)*nbasis
-
-            u1 = mesh%span_range(1, ee); u2 = mesh%span_range(2, ee)
-            v1 = mesh%span_range(3, ee); v2 = mesh%span_range(4, ee)
-            ncp_active = mesh%n_cp_xi(ee) * mesh%n_cp_eta(ee)
-
+            u1 = mesh%elem_u_min(ee); u2 = mesh%elem_u_max(ee)
+            v1 = mesh%elem_v_min(ee); v2 = mesh%elem_v_max(ee)
             ! Get actual physical coordinates of the high-order nodes
-            do i = 1, ncp_active
-                reordered_coords(i, :) = mesh%nodes(max(1, mesh%elems(ee, i)), :)
+            do ii = 1, nbasis
+                mesh_coords(ii, :) = mesh%nodes(mesh%elems(ee, ii), :)
             end do
             
-            ! Loop through eta (j) then xi (i) to match standard VTK ordering
-            do j = 1, refine_level
-                do i = 1, refine_level
+            do jj = 1, refine_level
+                do ii = 1, refine_level
                     gid = gid + 1
+                    xi_val  = 0.5_dp * ((u2 - u1) * xi_grid(ii) + (u2 + u1))
+                    eta_val = 0.5_dp * ((v2 - v1) * eta_grid(jj) + (v2 + v1))
+                    call EvalNURBS2D(FE, ee, mesh, xi_val, eta_val, N_eval, dR_dxi, dR_deta)
                     
-                    ! Map reference space [-1, 1] to knot span [u1, u2] x [v1, v2]
-                    u_val = 0.5_dp * ((u2 - u1) * xi_grid(i) + (u2 + u1))
-                    v_val = 0.5_dp * ((v2 - v1) * eta_grid(j) + (v2 + v1))
-                    call EvalNURBS2D(FE, ee, mesh, u_val, v_val, N_eval, dR_dxi, dR_deta)
+                    Xp(gid,1) = dot_product(N_eval, mesh_coords(:, 1))
+                    Xp(gid,2) = dot_product(N_eval, mesh_coords(:, 2))
+                    if (size(mesh_coords, 2) == 3) then
+                        Xp(gid,3) = dot_product(N_eval, mesh_coords(:, 3))
+                    else
+                        Xp(gid,3) = 0.0_dp
+                    end if
                     
-                    Xp(gid,1) = dot_product(N_eval(1:ncp_active), reordered_coords(1:ncp_active, 1))
-                    Xp(gid,2) = dot_product(N_eval(1:ncp_active), reordered_coords(1:ncp_active, 2))
-                    Xp(gid,3) = 0.0_dp
-                    
-                    do g = 1, n_groups
-                        Up(gid, g) = dot_product(N_eval, scalar_flux(basep+1:basep+nbasis, g))
+                    do g = 1, NGRP
+                        Up(gid, g) = dot_product(N_eval, XPETSc(basep+1:basep+nbasis, g))
                     end do
                 end do
             end do
+            
+            ! Store Jacobian at the center of the element for debugging
+            nodes_e = mesh%nodes(mesh%elems(ee, 1:nbasis), :)
+            call GetMapping2D(FE, ee, mesh, 1, Quad, u1, u2, v1, v2, nodes_e, dN_dx, dN_dy, detJ, N_eval, xi_custom=0.0_dp, eta_custom=0.0_dp)
+            do ii = 1, ncells_elem
+                Jp(cid + ii) = detJ
+            end do
+            cid = cid + ncells_elem
         end do
 
         ! 2. Generate sub-quad connectivity (Linear quads for visualization)
@@ -98,12 +113,12 @@ contains
         do ee = 1, mesh%n_elems
             ! Start of this element's points in the global Xp array
             basep = (ee-1)*npts_elem 
-            do j = 1, refine_level - 1
-                do i = 1, refine_level - 1
+            do jj = 1, refine_level - 1
+                do ii = 1, refine_level - 1
                     ! Node indices in the gid sequence (1-based for now)
-                    n00 = basep + (j-1)*refine_level + i
+                    n00 = basep + (jj-1)*refine_level + ii
                     n10 = n00 + 1
-                    n01 = basep + j*refine_level + i
+                    n01 = basep + jj*refine_level + ii
                     n11 = n01 + 1
                     
                     cid = cid + 1
@@ -116,11 +131,17 @@ contains
         ! 4. File Writing
         adj = ""
         sem = "_f"
+        slash_idx = index(filename, '/', back=.true.)
+        if (slash_idx == 0) slash_idx = index(filename, '\', back=.true.)
         
         if (is_adjoint) adj = "_adj"
         if (is_SEM) sem = "_s"
         
-        full_path = trim(filename) // trim(sem) // trim(adj) // " n=" // trim(int_to_str(FE%order)) // " sn=" // trim(int_to_str(QuadSn%order)) // ".vtk"
+        if (slash_idx > 0) then
+            full_path = trim(filename) // "/" // trim(filename(slash_idx+1:)) // trim(sem) // trim(adj) // " n=" // trim(int_to_str(FE%order)) // " sn=" // trim(int_to_str(QuadSN%order)) // ".vtk"
+        else
+            full_path = trim(filename) // "/" // trim(filename) // trim(sem) // trim(adj) // " n=" // trim(int_to_str(FE%order)) // " sn=" // trim(int_to_str(QuadSN%order)) // ".vtk"
+        end if
 
         unit_v = 101
         open(unit=unit_v, file=trim(full_path), status='replace', action='write')
@@ -141,7 +162,7 @@ contains
         end do
 
         write(unit_v, '(A, I10)') "CELL_TYPES ", n_sub_elems
-        do i = 1, n_sub_elems
+        do ii = 1, n_sub_elems
             write(unit_v, '(I2)') 9 ! VTK_QUAD
         end do
 
@@ -150,14 +171,20 @@ contains
         write(unit_v, '(A)') "SCALARS Material_ID int 1"
         write(unit_v, '(A)') "LOOKUP_TABLE default"
         do ee = 1, mesh%n_elems
-            do i = 1, ncells_elem
+            do ii = 1, ncells_elem
                 write(unit_v, '(I10)') mesh%material_ids(ee)
             end do
         end do
 
+        write(unit_v, '(A)') "SCALARS Jacobian_Det double 1"
+        write(unit_v, '(A)') "LOOKUP_TABLE default"
+        do ii = 1, n_sub_elems
+            write(unit_v, '(F18.10)') Jp(ii)
+        end do
+
         ! Solution Data
         write(unit_v, '(A, I10)') "POINT_DATA ", n_sub_nodes
-        do g = 1, n_groups
+        do g = 1, NGRP
             write(unit_v, '(A, I0)') "SCALARS Flux_Group_", g
             write(unit_v, '(A)') "double 1"
             write(unit_v, '(A)') "LOOKUP_TABLE default"
@@ -167,7 +194,7 @@ contains
         end do
 
         close(unit_v)
-        deallocate(xi_grid, eta_grid, N_eval, reordered_coords, Xp, Up, Cells, dR_dxi, dR_deta)
+        deallocate(xi_grid, eta_grid, N_eval, mesh_coords, Xp, Up, Cells)
 
     end subroutine export_dfem_vtk
 
