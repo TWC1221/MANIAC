@@ -9,10 +9,7 @@ module m_types
         real(dp), allocatable :: weights(:)       ! Weights of control points (NURBS)
 
         ! --- Original NURBS Patch Data ---
-        integer              :: n_patches        
         integer              :: n_edges          
-        integer              :: max_cp_patch     
-        integer              :: max_knots_patch  
         integer, allocatable :: patch_cp_ids(:,:) ! Global CP IDs for each original patch
         integer, allocatable :: patch_material_ids(:)
         integer, allocatable :: patch_n_cp_xi(:), patch_n_cp_eta(:)
@@ -28,8 +25,6 @@ module m_types
 
         ! --- Solver Elements (Knot Spans) ---
         integer :: n_elems          
-        integer :: n_faces          
-        integer :: n_cp_per_elem    
         integer :: order            ! Global polynomial order
 
         integer, allocatable :: elems(:,:)        ! Global CP IDs per knot span element
@@ -40,11 +35,11 @@ module m_types
         real(dp), allocatable :: elem_v_min(:), elem_v_max(:)
 
         ! --- Transport Physics & Connectivity ---
-        integer :: n_faces_per_elem
-        integer, allocatable :: face_connectivity(:,:,:)
+        integer               :: n_faces_per_elem
+        integer, allocatable  :: face_connectivity(:,:,:)
         real(dp), allocatable :: face_normals(:,:,:)
-        integer, allocatable :: upwind_idx(:,:,:)
-        integer, allocatable :: reflect_map(:,:,:)
+        integer, allocatable  :: upwind_idx(:,:,:)
+        integer, allocatable  :: reflect_map(:,:,:)
 
         real(dp), allocatable :: elem_mass_matrix(:,:,:)
         real(dp), allocatable :: elem_stiffness_x(:,:,:)
@@ -96,9 +91,5 @@ module m_types
         real(dp), dimension(:,:), allocatable :: dirs
         real(dp), dimension(:), allocatable   :: weights
     end type t_sn_quadrature
-
-    type t_edge_sort
-        integer :: n1, n2
-    end type t_edge_sort
 
 end module m_types

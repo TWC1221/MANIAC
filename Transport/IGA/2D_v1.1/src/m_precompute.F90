@@ -54,7 +54,7 @@ contains
         type(t_mesh), intent(inout) :: mesh
         type(t_finite), intent(in) :: FE
         type(t_quadrature), intent(in) :: Quad, QuadBound
-        integer :: ee, q, i, jj, f
+        integer :: ee, q, ii, jj, f
         real(dp) :: nodes(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV
         real(dp) :: R(FE%n_basis), dx_dxi, dy_dxi, xi_f, eta_f, temp_nx, temp_ny, len, J(2,2)
         real(dp) :: u1, u2, v1, v2
@@ -97,7 +97,6 @@ contains
                         case(4); xi_f = -1.0_dp;         eta_f = -QuadBound%xi(q)
                     end select
 
-                    ! Evaluate physical metrics at the boundary point via the 2D Jacobian
                     call GetMapping2D(FE, ee, mesh, q, Quad, u1, u2, v1, v2, nodes, dN_dx, dN_dy, detJ, R, &
                                      xi_custom=xi_f, eta_custom=eta_f, J_out=J)
 
@@ -114,10 +113,10 @@ contains
                     temp_nx = temp_nx + dy_dxi * QuadBound%weights(q)
                     temp_ny = temp_ny - dx_dxi * QuadBound%weights(q)
 
-                    do i = 1, FE%n_basis
+                    do ii = 1, FE%n_basis
                         do jj = 1, FE%n_basis
-                            mesh%face_mass_x(i,jj,f,ee) = mesh%face_mass_x(i,jj,f,ee) + R(i) * R(jj) * dy_dxi * QuadBound%weights(q)
-                            mesh%face_mass_y(i,jj,f,ee) = mesh%face_mass_y(i,jj,f,ee) - R(i) * R(jj) * dx_dxi * QuadBound%weights(q)
+                            mesh%face_mass_x(ii,jj,f,ee) = mesh%face_mass_x(ii,jj,f,ee) + R(ii) * R(jj) * dy_dxi * QuadBound%weights(q)
+                            mesh%face_mass_y(ii,jj,f,ee) = mesh%face_mass_y(ii,jj,f,ee) - R(ii) * R(jj) * dx_dxi * QuadBound%weights(q)
                         end do
                     end do
                 end do ! end q loop

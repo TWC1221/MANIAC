@@ -65,6 +65,7 @@ contains
                                                              dir(2)*mesh%face_mass_y(:, FE%face_node_map(i_face_node, f), f, ie))
                                 end do
                             else if (any(mesh%face_connectivity(4, f, ie) == ref_ID)) then 
+                                print*, "LOOK AT ME: ping ping ping ping"
                                 m_ref = mesh%reflect_map(mm, f, ie)
                                 do i_face_node = 1, FE%n_nodes_per_face
                                     local_dof_idx = idx_start - 1 + FE%face_node_map(i_face_node, f)

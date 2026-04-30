@@ -11,7 +11,7 @@ module m_outpVTK_dfem
 
 contains
 
-    subroutine export_dfem_vtk(filename, mesh, FE, Quad, QuadSN, XPETSc, NGRP, PinPowers, is_SEM, is_adjoint, refine_level_in)
+    subroutine export_dfem_vtk(filename, mesh, FE, Quad, QuadSN, XPETSc, NGRP, PinPowers, is_adjoint, refine_level_in)
         character(len=*), intent(in) :: filename
         type(t_mesh),     intent(in) :: mesh
         type(t_finite),   intent(in) :: FE
@@ -19,7 +19,7 @@ contains
         type(t_sn_quadrature), intent(in) :: QuadSN
         real(dp),         intent(in) :: XPETSc(:,:) 
         integer,          intent(in) :: NGRP
-        logical,          intent(in) :: is_SEM, is_adjoint
+        logical,          intent(in) :: is_adjoint
         real(dp), intent(in), optional :: PinPowers(0:)
         integer,  intent(in), optional :: refine_level_in
 
@@ -135,7 +135,6 @@ contains
         if (slash_idx == 0) slash_idx = index(filename, '\', back=.true.)
         
         if (is_adjoint) adj = "_adj"
-        if (is_SEM) sem = "_s"
         
         if (slash_idx > 0) then
             full_path = trim(filename) // "/" // trim(filename(slash_idx+1:)) // trim(sem) // trim(adj) // " n=" // trim(int_to_str(FE%order)) // " sn=" // trim(int_to_str(QuadSN%order)) // ".vtk"

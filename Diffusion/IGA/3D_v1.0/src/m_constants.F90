@@ -43,5 +43,10 @@ module m_constants
     integer, parameter  :: BC_DIRICHLET  = 3  
     integer, parameter  :: BC_ALBEDO     = 4  
     real(dp), parameter :: PENALTY = 1.0e10_dp
+
+    ! Define constants for output formatting if not in m_constants
+    character(len=75), parameter :: HDR = " +-----------------------------------------------------------------------+"
+    character(len=75), parameter :: SEP = " |-----------------------------------------------------------------------|"
+
   
 end module

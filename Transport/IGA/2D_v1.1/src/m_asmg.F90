@@ -39,11 +39,13 @@ contains
         integer :: unit, iostatus, ii, jj, k, p_idx, span_u, span_v, cp_idx
         real(dp) :: dummy_coord
         character(len=1024) :: line
-        integer :: patch_count, edge_count, p_count, poly_order, n_total_elems
+        integer :: patch_count, edge_count, n_total_elems
         integer :: max_cp, max_knots, pos, p, q
 
         open(newunit=unit, file=filepath, status='old', action='read')
-        patch_count = 0; edge_count = 0; p_count = 0; poly_order = 0
+        mesh%order     = 0
+        mesh%n_nodes  = 0
+        patch_count = 0; edge_count = 0;
         max_cp = 0; max_knots = 0
         
         do
@@ -55,11 +57,14 @@ contains
                 patch_count = patch_count + 1
             else if (index(line, 'PolyOrder') > 0) then
                 pos = index(line, 'PolyOrder') + 9
-                read(line(pos+1:), *) poly_order
+                read(line(pos+1:), *) mesh%order
+            else if (index(line, 'Dims') > 0) then
+                pos = index(line, 'Dims') + 4
+                read(line(pos+1:), *) mesh%dim
             else if (index(line, '$1D_Patch_Description_Start') > 0) then
                 edge_count = edge_count + 1
             else if (index(line, 'POINTS') == 1) then
-                read(line(7:), *) p_count
+                read(line(7:), *) mesh%n_nodes
             else if (index(line, 'control_points:') > 0) then
                 pos = index(line, ':')
                 read(line(pos+1:), *) k
@@ -80,14 +85,10 @@ contains
             end if
         end do
 
-        mesh%n_nodes   = p_count
-        mesh%n_patches = patch_count
         mesh%n_edges   = edge_count
-        mesh%order     = poly_order
-        mesh%dim       = 2
-        mesh%n_cp_per_elem = (poly_order + 1)**2
         mesh%n_faces_per_elem = 4
-        p = poly_order; q = poly_order
+        p = mesh%order
+        q = mesh%order
 
         allocate(mesh%nodes(mesh%n_nodes, mesh%dim), mesh%weights(mesh%n_nodes))
         allocate(mesh%patch_cp_ids(patch_count, max_cp), mesh%patch_material_ids(patch_count))
@@ -96,7 +97,7 @@ contains
         allocate(mesh%patch_knot_vectors_xi(patch_count, max_knots), mesh%patch_knot_vectors_eta(patch_count, max_knots))
         allocate(mesh%edge_n_cp_xi(edge_count), mesh%edge_n_knots_xi(edge_count))
         allocate(mesh%edge_knot_vectors_xi(edge_count, max_knots))
-        allocate(mesh%edges(mesh%n_edges, max_cp), mesh%boundary_ids(mesh%n_edges))
+        allocate(mesh%edges(edge_count, max_cp), mesh%boundary_ids(edge_count))
 
         mesh%patch_cp_ids = 0; mesh%patch_knot_vectors_xi = 0.0; mesh%patch_knot_vectors_eta = 0.0
 

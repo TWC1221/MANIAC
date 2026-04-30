@@ -56,6 +56,7 @@ module m_basis
         J = matmul(dRdXiEta, elem_coords)
 
         detJ = (J(1,1)*J(2,2) - J(1,2)*J(2,1)) * detJ_param
+        detJ = abs(detJ) ! Ensure positive volume integration to maintain matrix positive-definiteness
 
         if (abs(detJ) < 1e-15_dp) detJ = 1e-15_dp
 

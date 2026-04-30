@@ -131,6 +131,8 @@ subroutine ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, 
             elem_coords(i, :) = mesh%nodes(mesh%elems(ee, i), :)
         end do
 
+        print*, FE%n_basis
+
         ! Loop over non-zero knot spans (elements) within the patch
         do i = 1, size(mesh%knot_vectors_xi, 2) - 1
             u1 = mesh%knot_vectors_xi(ee, i); u2 = mesh%knot_vectors_xi(ee, i+1)
@@ -140,6 +142,7 @@ subroutine ASSEMBLEMultigroupMAT_PETSc(A_MAT, MAT_F, MAT_S, PROD_VEC, FixedSrc, 
                 v1 = mesh%knot_vectors_eta(ee, j); v2 = mesh%knot_vectors_eta(ee, j+1)
                 if (abs(v2 - v1) < 1e-10_dp) cycle
         
+                PRINT*,v1,v2,u1,u2, elem_coords(:, 1)
                 do q = 1, Quad%NoPoints
                     call GetMapping(FE, ee, mesh, q, Quad, u1, u2, v1, v2, elem_coords, &
                                     dN_dx, dN_dy, detJ, FE_N, FE_N_mat)

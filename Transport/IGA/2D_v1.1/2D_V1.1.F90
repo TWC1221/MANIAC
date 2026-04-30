@@ -27,19 +27,18 @@ program fem2d_main
     integer                         :: n_groups, ref_ID(1)
     integer                         :: outer_iter, max_outer_iter
     real(dp)                        :: k_eff, k_eff_prime, total_prod_val, flux_diff, tol, t1, t2
-    logical                         :: is_eigenvalue_problem, is_adjoint, is_SEM
+    logical                         :: is_eigenvalue_problem, is_adjoint
     character(len=128)              :: InputMesh
 
     ! --- Configuration ---
     is_eigenvalue_problem  = .true.
     is_adjoint             = .false.
 
-    InputMesh              = "../input/dragon.asmg"!
-    ref_ID                 = [2] !B=101,R=102,T=103,L=104
+    InputMesh              = "../input/dragon.asmg"
+    ref_ID                 = [2]
     n_groups               = 7
 
-    FE%order               = 2
-    QuadSn%order           = 16
+    QuadSn%order           = 2
 
     max_outer_iter          = 600
     tol                    = 1e-6
@@ -47,10 +46,8 @@ program fem2d_main
     t1 = omp_get_wtime()
 
     call read_asmg_mesh(InputMesh, mesh)
-
-    is_SEM = .false. ! IGA uses NURBS basis, SEM quadrature flags are irrelevant here
     call InitialiseBasis(FE, mesh)
-    call InitialiseQuadrature(FE, mesh, Quad1D, Quad2D, QuadSn, is_adjoint, is_SEM, boundary_order_plus=8)
+    call InitialiseQuadrature(FE, mesh, Quad1D, Quad2D, QuadSn, is_adjoint, boundary_order_plus=8)
     call InitialiseMaterials(materials, mesh, n_groups, "../input/MATS.txt", printout = .true.)
     call InitialiseGeometry(mesh, FE, QuadSn, sweep_order)
     call InitialiseTransport(mesh, FE, Quad2D, Quad1D, QuadSn, materials, n_groups)
@@ -81,7 +78,7 @@ program fem2d_main
                 write(*,*) "Warning: Fission production dropped to zero. Iteration halted to prevent overflow."
             end if
 
-            write(*,'(A,I3,A,F12.6,A,ES12.4)') " Outer: ", outer_iter, " k: ", k_eff, " Diff: ", flux_diff
+            write(*,'(A,I3,A,F16.3,A,ES12.4)') " Outer: ", outer_iter, " k: ", k_eff, " Diff: ", flux_diff
             if (abs(k_eff - k_eff_prime)/k_eff < tol) exit
         else
             write(*,'(A,I3,A,ES12.4)') " Outer: ", outer_iter, " Diff: ", flux_diff
@@ -89,7 +86,7 @@ program fem2d_main
         end if
     end do
 
-    call export_dfem_vtk("../output/"//derive_case_nametag(InputMesh), mesh, FE, Quad1D, QuadSN, scalar_flux, n_groups, pin_powers, is_SEM, is_adjoint, refine_level_in=6)
+    call export_dfem_vtk("../output/"//derive_case_nametag(InputMesh), mesh, FE, Quad1D, QuadSN, scalar_flux, n_groups, pin_powers, is_adjoint, refine_level_in=6)
     write(*,*) ">>> Simulation Complete."
 
     t2 = omp_get_wtime()

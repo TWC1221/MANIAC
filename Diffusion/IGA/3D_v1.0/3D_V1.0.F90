@@ -43,7 +43,7 @@ program fem2d_main
     real(dp), allocatable   :: mat_volumes(:)
     character(len=32)       :: InputMesh
 
-    InputMesh = "../input/c5g7.asmg"
+    InputMesh = "../input/rod_test.asmg"
     is_eigenvalue_problem   = .true.
     is_adjoint              = .false.
     n_groups               = 7
@@ -199,7 +199,7 @@ program fem2d_main
     end if
 
     if (solver_choice /= SOLVER_PCG) then
-        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 3, .false.)
+        call export_vtk_petsc("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_VEC, n_groups, 10, .false.)
         call PetscFinalize(ierr)
     else
         call export_vtk_pcg("../output/"//derive_case_nametag(InputMesh), FE, mesh, X_PCG, n_groups, 10, .false.)

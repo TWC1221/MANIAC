@@ -73,7 +73,7 @@ program fem2d_main
             call Calculate_Total_Production_DGFEM(total_prod_val, scalar_flux, materials, mesh, FE, n_groups, is_adjoint)
             k_eff = total_prod_val * k_eff_prime
             scalar_flux = scalar_flux / total_prod_val
-            write(*,'(A,I3,A,F12.8,A,ES12.4)') " Outer: ", outer_iter, " k: ", k_eff, " Diff: ", flux_diff
+            write(*,'(A,I3,A,F16.8,A,ES12.4)') " Outer: ", outer_iter, " k: ", k_eff, " Diff: ", flux_diff
             if (abs(k_eff - k_eff_prime)/k_eff < tol) exit
         else
             write(*,'(A,I3,A,ES12.4)') " Outer: ", outer_iter, " Diff: ", flux_diff

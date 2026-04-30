@@ -109,7 +109,6 @@ contains
             if (iostatus /= 0) exit
             line = adjustl(line)
 
-            ! Skip comments and empty lines at the top level
             if (len_trim(line) == 0 .or. line(1:1) == '!') cycle
 
             if (index(line, 'POINTS') == 1) then
@@ -123,7 +122,7 @@ contains
                                      p_order=poly_order, out_knots_xi=mesh%edge_knots_xi(i,:), out_knots_eta=mesh%edge_knots_eta(i,:), &
                                      n_k_xi=mesh%n_knots_xi_edge(i), n_k_eta=mesh%n_knots_eta_edge(i), &
                                      n_cp_xi=mesh%n_cp_xi_edge(i), n_cp_eta=mesh%n_cp_eta_edge(i))
-                ! Sync fallback for 1D
+
                 mesh%edge_knots(i,:) = mesh%edge_knots_xi(i,:)
                 mesh%n_knots_edge(i) = mesh%n_knots_xi_edge(i)
 
