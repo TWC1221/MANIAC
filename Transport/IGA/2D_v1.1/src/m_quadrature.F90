@@ -27,22 +27,17 @@ public :: t_quadrature, t_sn_quadrature
 
 contains
 
-subroutine InitialiseQuadrature(FE, mesh, Quad1D, Quad, QuadSn, is_adjoint, boundary_order_plus)
+subroutine InitialiseQuadrature(FE, mesh, Quad1D, Quad, QuadSn, is_adjoint)
     type(t_quadrature), intent(inout)       :: Quad1D, Quad
     type(t_sn_quadrature), intent(inout)    :: QuadSn
-    type(t_finite), intent(inout)              :: FE   
+    type(t_finite), intent(inout)           :: FE   
     type(t_mesh), intent(in)                :: mesh
     logical, intent(in)                     :: is_adjoint
-    integer, intent(in), optional           :: boundary_order_plus
-    integer :: b_order, v_order
-    type(t_quadrature) :: Quad1D_vol
+    integer :: v_order
 
-    v_order = FE%order + 1
-    b_order = v_order
-    if (present(boundary_order_plus)) b_order = b_order + boundary_order_plus
-
-    call LinearQuadrature(Quad1D, b_order)
-    call LinearQuadrature(Quad1D_vol, v_order)
+    v_order = (FE%order + 1) ** 2
+    
+    call LinearQuadrature(Quad1D, v_order)
     call QuadrilateralQuadrature(Quad, v_order)
 
     call AngularQuadrature(mesh%dim, QuadSn%order, QuadSn, is_adjoint)

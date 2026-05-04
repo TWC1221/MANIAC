@@ -4,10 +4,9 @@ module m_material
   implicit none
   contains
 
-  subroutine InitialiseMaterials(mats, mesh, n_groups, filename, printout)
+  subroutine InitialiseMaterials(mats, mesh, filename, printout)
       type(t_material), allocatable, intent(out) :: mats(:)
       type(t_mesh), intent(in) :: mesh
-      integer, intent(in) :: n_groups
       character(len=*), intent(in) :: filename
       logical, intent(in) :: printout
       integer, allocatable :: unique_ids(:)
@@ -19,19 +18,19 @@ module m_material
       allocate(unique_ids(max_id))
       n_unique = 0
       do i = 1, max_id
-          if (any(mesh%material_ids == i) .or. any(mesh%boundary_ids == i)) then
+          if (any(mesh%material_ids == i)) then
               n_unique = n_unique + 1
               unique_ids(n_unique) = i
           end if
       end do
 
-      call ParseMaterialDeck(mats, unique_ids(1:n_unique), n_groups, filename)
+      call ParseMaterialDeck(mats, unique_ids(1:n_unique), mesh%n_groups, filename)
 
       do i = 1, max_id
-          if (allocated(mats(i)%SigA)) call UpdateComputables(mats(i), n_groups)
+          if (allocated(mats(i)%SigA)) call UpdateComputables(mats(i), mesh%n_groups)
       end do
 
-      if (printout) call PrintMaterialSummary(mats, n_groups)
+      if (printout) call PrintMaterialSummary(mats, mesh%n_groups)
   end subroutine InitialiseMaterials
 
   subroutine ParseMaterialDeck(mats, requested_ids, n_groups, filename)
@@ -160,7 +159,8 @@ subroutine PrintMaterialSummary(mats, n_groups)
           
           write(*,'(A, T63, A, T' // to_str(total_width) // ', A)') &
             " | Grp |    SigT    |    SigA    |   NuSigF   |     Chi    |", &
-            "Scattering Matrix (From Row \ To Column)", "|"
+            merge("Scattering Matrix (From Row \ To Column)", &
+            "Scattering                              ",n_groups >= 5), "|"
           write(*,'(A)') sep
 
           do g = 1, n_groups

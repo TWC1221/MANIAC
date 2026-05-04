@@ -28,22 +28,21 @@ module m_transport_precompute
 
 contains
 
-    subroutine InitialiseTransport(mesh, FE, Quad, QuadBound, sn_quad, materials, n_groups)
+    subroutine InitialiseTransport(mesh, FE, sn_quad, Quad2D, Quad1D, materials)
         type(t_mesh), intent(inout) :: mesh
         type(t_finite), intent(in) :: FE
-        type(t_quadrature), intent(in) :: Quad, QuadBound
         type(t_sn_quadrature), intent(in) :: sn_quad
+        type(t_quadrature), intent(in) :: Quad2D, Quad1D
         type(t_material), intent(in) :: materials(:)
-        integer, intent(in) :: n_groups
-
-        ! 1. Geometric Integrals Mass and Stiffness
-        call Precompute_Transport_Integrals(mesh, FE, Quad, QuadBound)
         
+        ! 1. Precompute integrals (Matrices) - moved from main
+        call Precompute_Transport_Integrals(mesh, FE, Quad2D, Quad1D)
+
         ! 2. Angle Mapping 
         call Precompute_Reflective_Map(mesh, sn_quad)
         
         ! 3. LU Factorization
-        call Precompute_All_Local_LU(mesh, FE, sn_quad, materials, n_groups)
+        call Precompute_LU_Decomposition(mesh, FE, sn_quad, materials, mesh%n_groups)
         
         ! 4. Verification
         call Verify_Integrals(mesh, FE)
@@ -56,20 +55,21 @@ contains
         type(t_quadrature), intent(in) :: Quad, QuadBound
         integer :: ee, q, ii, jj, f
         real(dp) :: nodes(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, dV
-        real(dp) :: R(FE%n_basis), dx_dxi, dy_dxi, xi_f, eta_f, temp_nx, temp_ny, len, J(2,2)
+        real(dp) :: R(FE%n_basis), dx_dxi, dy_dxi, xi_f, eta_f, J(2,2)
         real(dp) :: u1, u2, v1, v2
 
         allocate(mesh%elem_mass_matrix(FE%n_basis, FE%n_basis, mesh%n_elems), &
                  mesh%elem_stiffness_x(FE%n_basis, FE%n_basis, mesh%n_elems),     &
                  mesh%elem_stiffness_y(FE%n_basis, FE%n_basis, mesh%n_elems),     &
-                 mesh%face_mass_x(FE%n_basis, FE%n_basis, mesh%n_faces_per_elem, mesh%n_elems), &
-                 mesh%face_mass_y(FE%n_basis, FE%n_basis, mesh%n_faces_per_elem, mesh%n_elems), &
+                 mesh%face_mass_x(FE%n_basis, FE%n_basis, 4, mesh%n_elems), &
+                 mesh%face_mass_y(FE%n_basis, FE%n_basis, 4, mesh%n_elems), &
                  mesh%basis_integrals_vol(FE%n_basis, mesh%n_elems))
         
         mesh%elem_mass_matrix = 0.0_dp; mesh%elem_stiffness_x = 0.0_dp; mesh%elem_stiffness_y = 0.0_dp
         mesh%face_mass_x = 0.0_dp; mesh%face_mass_y = 0.0_dp
         mesh%basis_integrals_vol = 0.0_dp
 
+        !$OMP PARALLEL DO PRIVATE(ee, nodes, u1, u2, v1, v2, q, dN_dx, dN_dy, detJ, R, dV, f, xi_f, eta_f, J, dx_dxi, dy_dxi, ii, jj)
         do ee = 1, mesh%n_elems
             nodes = mesh%nodes(mesh%elems(ee, 1:FE%n_basis), :)
             u1 = mesh%elem_u_min(ee); u2 = mesh%elem_u_max(ee)
@@ -84,10 +84,7 @@ contains
                 mesh%basis_integrals_vol(:,ee)    = mesh%basis_integrals_vol(:,ee)    + R * dV
             end do
             
-            do f = 1, mesh%n_faces_per_elem
-                ! Initialize temporary normal components for this face
-                temp_nx = 0.0_dp
-                temp_ny = 0.0_dp
+            do f = 1, 4 ! Number of faces per element
                 do q = 1, QuadBound%n_points
                     ! Evaluate actual NURBS basis on the face coordinates
                     select case(f)
@@ -109,10 +106,6 @@ contains
                         case(4); dx_dxi = -J(2,1)*0.5_dp*(v2-v1); dy_dxi = -J(2,2)*0.5_dp*(v2-v1)
                     end select
 
-                    ! Accumulate normal components for averaging
-                    temp_nx = temp_nx + dy_dxi * QuadBound%weights(q)
-                    temp_ny = temp_ny - dx_dxi * QuadBound%weights(q)
-
                     do ii = 1, FE%n_basis
                         do jj = 1, FE%n_basis
                             mesh%face_mass_x(ii,jj,f,ee) = mesh%face_mass_x(ii,jj,f,ee) + R(ii) * R(jj) * dy_dxi * QuadBound%weights(q)
@@ -120,19 +113,15 @@ contains
                         end do
                     end do
                 end do ! end q loop
-                ! Normalize and store the average face normal
-                len = sqrt(temp_nx**2 + temp_ny**2)
-                if (len > dp_EPSILON) then
-                    mesh%face_normals(:, f, ee) = [temp_nx, temp_ny] / len
-                end if
             end do
         end do
+        !$OMP END PARALLEL DO
     end subroutine Precompute_Transport_Integrals
 
     subroutine Verify_Integrals(mesh, FE)
         type(t_mesh), intent(in) :: mesh
         type(t_finite), intent(in) :: FE
-        integer :: ee, f
+        integer :: ee
         real(dp) :: vol, stiffness_err_x, stiffness_err_y, net_face_x, net_face_y, symmetry_err
         logical :: passed
 
@@ -143,17 +132,6 @@ contains
             if (vol <= 0.0_dp) then
                 write(*,*) "[ERROR] Element", ee, "has non-positive volume:", vol
                 passed = .false.
-            end if
-
-            if (any(mesh%basis_integrals_vol(:, ee) < 0.0_dp)) then
-                 write(*,*) "[ERROR] Element", ee, "is inverted (Negative volume). Check node ordering."
-                 passed = .false.
-            end if
-
-            ! Check for negative volume integrals (indicates inverted element)
-            if (any(mesh%basis_integrals_vol(:, ee) < 0.0_dp)) then
-                 write(*,*) "[ERROR] Element", ee, "is inverted (Negative volume). Check node ordering."
-                 passed = .false.
             end if
 
             ! 2. Stiffness Sum Check (Weak Form: sum over test functions [dim=1] must be zero)
@@ -188,21 +166,24 @@ contains
         integer :: ee, f, mm, m_iter
         real(dp) :: normal(3), dir(3), ref_dir(3), max_dot, dprod
 
-        allocate(mesh%reflect_map(sn_quad%n_angles, mesh%n_faces_per_elem, mesh%n_elems))
+        allocate(mesh%reflect_map(sn_quad%n_angles, 4, mesh%n_elems))
         mesh%reflect_map = 0
 
+        !$OMP PARALLEL DO PRIVATE(ee, f, normal, mm, dir, ref_dir, max_dot, m_iter, dprod)
         do ee = 1, mesh%n_elems
-            do f = 1, mesh%n_faces_per_elem
+            do f = 1, 4 ! Number of faces per element
                 normal(1:2) = mesh%face_normals(:, f, ee)
                 normal(3) = 0.0_dp
                 do mm = 1, sn_quad%n_angles
                     dir = sn_quad%dirs(mm, :)
                     ref_dir = dir - 2.0_dp * dot_product(dir, normal) * normal
-                    ! Prioritize angles with similar polar component (dir_z)
-                    max_dot = -2.0_dp ! Initialize with a very low value
+                    
+                    max_dot = -2.0_dp
                     do m_iter = 1, sn_quad%n_angles
-                        dprod = dot_product(ref_dir, sn_quad%dirs(m_iter, :)) - &
-                                0.1_dp * abs(ref_dir(3) - sn_quad%dirs(m_iter, 3)) ! Penalty for different polar level
+                        ! STABILITY FIX: Reflections MUST stay on the same polar level (z-plane)
+                        if (abs(ref_dir(3) - sn_quad%dirs(m_iter, 3)) > SMALL_NUMBER) cycle
+                        
+                        dprod = dot_product(ref_dir, sn_quad%dirs(m_iter, :))
                         if (dprod > max_dot) then
                             max_dot = dprod
                             mesh%reflect_map(mm, f, ee) = m_iter
@@ -211,9 +192,10 @@ contains
                 end do
             end do
         end do
+        !$OMP END PARALLEL DO
     end subroutine Precompute_Reflective_Map
 
-    subroutine Precompute_All_Local_LU(mesh, FE, sn_quad, materials, n_groups)
+    subroutine Precompute_LU_Decomposition(mesh, FE, sn_quad, materials, n_groups)
         type(t_mesh), intent(inout) :: mesh
         type(t_finite), intent(in) :: FE
         type(t_sn_quadrature), intent(in) :: sn_quad
@@ -221,24 +203,26 @@ contains
         integer, intent(in) :: n_groups
         integer :: ee, mm, g, f, info
         real(dp) :: A(FE%n_basis, FE%n_basis), dir(2), o_n
+        real(dp) :: StiffnessOutflow(FE%n_basis, FE%n_basis)
 
         allocate(mesh%local_lu(FE%n_basis, FE%n_basis, mesh%n_elems, sn_quad%n_angles, n_groups), &
                  mesh%local_pivots(FE%n_basis, mesh%n_elems, sn_quad%n_angles, n_groups))
 
+        !$OMP PARALLEL DO PRIVATE(mm, dir, ee, StiffnessOutflow, f, o_n, g, A, info)
         do mm = 1, sn_quad%n_angles
             dir = sn_quad%dirs(mm, 1:2)
             do ee = 1, mesh%n_elems
+                ! SYNC FIX: Use face_normals and 0.0 threshold to match m_transport.F90 exactly
+                StiffnessOutflow = -(dir(1)*mesh%elem_stiffness_x(:,:,ee) + dir(2)*mesh%elem_stiffness_y(:,:,ee))
+                do f = 1, 4
+                    o_n = dot_product(dir, mesh%face_normals(1:2, f, ee))
+                    if (o_n > 0.0_dp) then
+                        StiffnessOutflow = StiffnessOutflow + (dir(1)*mesh%face_mass_x(:,:,f,ee) + dir(2)*mesh%face_mass_y(:,:,f,ee))
+                    end if
+                end do
+
                 do g = 1, n_groups
-                    ! Matrix A = [Sigma_t * Mass] - [Omega . Stiffness] + [Outflow Face Terms]
-                    A = materials(mesh%material_ids(ee))%SigmaT(g) * mesh%elem_mass_matrix(:,:,ee) - &
-                        (dir(1)*mesh%elem_stiffness_x(:,:,ee) + dir(2)*mesh%elem_stiffness_y(:,:,ee))
-                    
-                    do f = 1, mesh%n_faces_per_elem
-                        ! Integrated dot product check for outflow
-                        o_n = dir(1)*sum(mesh%face_mass_x(:,:,f,ee)) + &
-                              dir(2)*sum(mesh%face_mass_y(:,:,f,ee))
-                        if (o_n > 0.0_dp) A = A + (dir(1)*mesh%face_mass_x(:,:,f,ee) + dir(2)*mesh%face_mass_y(:,:,f,ee))
-                    end do
+                    A = materials(mesh%material_ids(ee))%SigmaT(g) * mesh%elem_mass_matrix(:,:,ee) + StiffnessOutflow
                     
                     call dgetrf(FE%n_basis, FE%n_basis, A, FE%n_basis, mesh%local_pivots(:,ee,mm,g), info)
                     
@@ -251,6 +235,7 @@ contains
                 end do
             end do
         end do
-    end subroutine Precompute_All_Local_LU
+        !$OMP END PARALLEL DO
+    end subroutine Precompute_LU_Decomposition
 
 end module m_transport_precompute

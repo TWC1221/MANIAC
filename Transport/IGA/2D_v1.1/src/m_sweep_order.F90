@@ -1,23 +1,26 @@
 module m_sweep_order
     use m_constants
     use m_types
+    use m_quadrature, only: t_quadrature
+    use m_basis, only: GetMapping2D
     implicit none
     private ! This should be public for InitialiseGeometry
     public :: InitialiseGeometry, connectivity_and_normals ! connectivity_and_normals needs to be public for testing
 
 contains
 
-    subroutine InitialiseGeometry(mesh, FE, QuadSn, sweep_order)
+    subroutine InitialiseGeometry(mesh, FE, QuadSn, Quad2D, Quad1D, sweep_order)
         type(t_mesh), intent(inout)             :: mesh
         type(t_finite), intent(in)              :: FE
         type(t_sn_quadrature), intent(in)       :: QuadSn
+        type(t_quadrature), intent(in)          :: Quad2D, Quad1D
         integer, allocatable, intent(out)       :: sweep_order(:,:)
 
         integer :: mm, n_angles
         real(dp) :: dir_tmp(2)
 
         ! 1. Build element-to-element and element-to-boundary connectivity and normals
-        call connectivity_and_normals(mesh, FE)
+        call connectivity_and_normals(mesh, FE, Quad2D, Quad1D)
 
         ! 2. Precompute the global indices for upwind neighbors to accelerate the sweep
         call precompute_upwind_indices(mesh, FE)
@@ -32,26 +35,65 @@ contains
         end do
     end subroutine InitialiseGeometry
 
-    subroutine connectivity_and_normals(mesh, FE)
+    subroutine connectivity_and_normals(mesh, FE, Quad2D, Quad1D)
         type(t_mesh), intent(inout)  :: mesh
         type(t_finite), intent(in)   :: FE
+        type(t_quadrature), intent(in) :: Quad2D, Quad1D
 
-        integer :: e1, e2, f1, f2, n_nodes_per_face, orientation
+        integer :: ee, e1, e2, f, f1, f2, n_nodes_per_face, orientation, q
+        real(dp) :: nodes(FE%n_basis, 2), dN_dx(FE%n_basis), dN_dy(FE%n_basis), detJ, R(FE%n_basis)
+        real(dp) :: u1, u2, v1, v2, xi_f, eta_f, dx_dxi, dy_dxi, temp_nx, temp_ny, len, J(2,2)
         logical :: found_neighbor
 
         n_nodes_per_face = FE%order + 1
         mesh%n_faces_per_elem = 4
 
         allocate(mesh%face_connectivity(4, mesh%n_faces_per_elem, mesh%n_elems))
-        allocate(mesh%face_normals(mesh%dim, mesh%n_faces_per_elem, mesh%n_elems))
+        allocate(mesh%face_normals(mesh%dim, 4, mesh%n_elems))
+        mesh%face_normals = 0.0_dp
+
+        do ee = 1, mesh%n_elems
+            nodes = mesh%nodes(mesh%elems(ee, 1:FE%n_basis), :)
+            u1 = mesh%elem_u_min(ee); u2 = mesh%elem_u_max(ee)
+            v1 = mesh%elem_v_min(ee); v2 = mesh%elem_v_max(ee)
+
+            do f = 1, 4
+                temp_nx = 0.0_dp
+                temp_ny = 0.0_dp
+                do q = 1, Quad1D%n_points
+                    select case(f)
+                        case(1); xi_f = Quad1D%xi(q); eta_f = -1.0_dp
+                        case(2); xi_f = 1.0_dp;          eta_f = Quad1D%xi(q)
+                        case(3); xi_f = -Quad1D%xi(q); eta_f = 1.0_dp
+                        case(4); xi_f = -1.0_dp;         eta_f = -Quad1D%xi(q)
+                    end select
+
+                    call GetMapping2D(FE, ee, mesh, q, Quad2D, u1, u2, v1, v2, nodes, dN_dx, dN_dy, detJ, R, &
+                                     xi_custom=xi_f, eta_custom=eta_f, J_out=J)
+
+                    select case(f)
+                        case(1); dx_dxi =  J(1,1)*0.5_dp*(u2-u1); dy_dxi =  J(1,2)*0.5_dp*(u2-u1)
+                        case(2); dx_dxi =  J(2,1)*0.5_dp*(v2-v1); dy_dxi =  J(2,2)*0.5_dp*(v2-v1)
+                        case(3); dx_dxi = -J(1,1)*0.5_dp*(u2-u1); dy_dxi = -J(1,2)*0.5_dp*(u2-u1)
+                        case(4); dx_dxi = -J(2,1)*0.5_dp*(v2-v1); dy_dxi = -J(2,2)*0.5_dp*(v2-v1)
+                    end select
+
+                    temp_nx = temp_nx + dy_dxi * Quad1D%weights(q)
+                    temp_ny = temp_ny - dx_dxi * Quad1D%weights(q)
+                end do
+                
+                len = sqrt(temp_nx**2 + temp_ny**2)
+                if (len > dp_EPSILON) then
+                    mesh%face_normals(:, f, ee) = [temp_nx, temp_ny] / len
+                end if
+            end do
+        end do
 
         ! Consolidated per-face metadata: dims = (4, n_faces_per_elem, n_elems)
         mesh%face_connectivity(1,:,:) = -1    ! face_connectivity(1, f, e) = neighbor element id (or -1)
         mesh%face_connectivity(2,:,:) = -1    ! face_connectivity(2, f, e) = neighbor face index
         mesh%face_connectivity(3,:,:) = 0     ! face_connectivity(3, f, e) = orientation (+1/-1/0)
-        mesh%face_connectivity(4,:,:) = 0     ! face_connectivity(4, f, e) = boundary id (0 = internal)
-        mesh%face_normals = 0.0_dp
-
+        mesh%face_connectivity(4,:,:) = BC_VACUUM ! Default to vacuum boundary
         ! Part 1: Neighbor Connectivity
         do e1 = 1, mesh%n_elems
             do f1 = 1, mesh%n_faces_per_elem
@@ -90,11 +132,12 @@ contains
             do e1 = 1, mesh%n_elems
                 do f1 = 1, mesh%n_faces_per_elem
                     if (mesh%face_connectivity(1, f1, e1) == -1) then
+                        mesh%face_connectivity(4, f1, e1) = BC_VACUUM 
                         nodes_face = mesh%elems(e1, FE%face_node_map(:, f1))
                         
                         do i_edge = 1, mesh%n_edges
-                            ! Check if the file's Edge definition is a subset of the Element's Face
-                            if (all_nodes_in_list(mesh, mesh%edges(i_edge, :), nodes_face)) then
+                            ! Check if the Element's Face is a subset of the file's Edge definition
+                            if (all_nodes_in_list(mesh, nodes_face, mesh%edges(i_edge, :))) then
                                 mesh%face_connectivity(4, f1, e1) = mesh%boundary_ids(i_edge)
                                 exit
                             end if
@@ -103,19 +146,6 @@ contains
                 end do
             end do
         end block
-
-        ! Part 3: Enforce Absolute Consistency on Internal Faces
-        ! This prevents cycles caused by floating point noise or "twisted" local indexing
-        do e1 = 1, mesh%n_elems
-            do f1 = 1, mesh%n_faces_per_elem
-                e2 = mesh%face_connectivity(1, f1, e1)
-                if (e2 > e1) then 
-                    f2 = mesh%face_connectivity(2, f1, e1)
-                    ! Ensure neighbor's normal is exactly opposite
-                    mesh%face_normals(:, f2, e2) = -mesh%face_normals(:, f1, e1)
-                end if
-            end do
-        end do
     end subroutine connectivity_and_normals
     
     subroutine precompute_upwind_indices(mesh, FE)
@@ -146,6 +176,11 @@ contains
                         ! Index = (Neighbor_ID - 1) * Nodes_Per_Elem + Local_Node_Index_on_Neighbor_Face
                         mesh%upwind_idx(j_f, f, ee) = (nid - 1) * FE%n_basis + FE%face_node_map(j_nf, n_fac)
                     end do
+                else
+                    ! Boundary face: upwind index is the node on the face itself (needed for reflections)
+                    do j_f = 1, FE%n_nodes_per_face
+                        mesh%upwind_idx(j_f, f, ee) = (ee - 1) * FE%n_basis + FE%face_node_map(j_f, f)
+                    end do
                 end if
             end do
         end do
@@ -156,16 +191,16 @@ contains
         integer, intent(in) :: subset(:), superset(:)
         logical :: is_subset
         integer :: ii, j, k
-        real(dp) :: x, y
         
         is_subset = .true.
         do ii = 1, size(subset)
             if (subset(ii) == 0) cycle ! Ignore zero-padding in edge connectivity
-            x = mesh%nodes(subset(ii), 1); y = mesh%nodes(subset(ii), 2)
             j = 0
             do k = 1, size(superset)
-                if (abs(mesh%nodes(superset(k),1) - x) < dp_EPSILON .and. &
-                    abs(mesh%nodes(superset(k),2) - y) < dp_EPSILON) j = 1
+                if (superset(k) == 0) cycle ! Skip padding in the edge definition
+                if (subset(ii) == superset(k)) then
+                    j = 1; exit
+                end if
             end do
             if (j == 0) then
                 is_subset = .false.; return

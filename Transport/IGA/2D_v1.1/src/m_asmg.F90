@@ -43,7 +43,7 @@ contains
         integer :: max_cp, max_knots, pos, p, q
 
         open(newunit=unit, file=filepath, status='old', action='read')
-        mesh%order     = 0
+        mesh%order     = 1 ! Default polynomial order
         mesh%n_nodes  = 0
         patch_count = 0; edge_count = 0;
         max_cp = 0; max_knots = 0
@@ -58,6 +58,9 @@ contains
             else if (index(line, 'PolyOrder') > 0) then
                 pos = index(line, 'PolyOrder') + 9
                 read(line(pos+1:), *) mesh%order
+            else if (index(line, 'Groups') > 0) then
+                pos = index(line, 'Groups') + 6
+                read(line(pos+1:), *) mesh%n_groups
             else if (index(line, 'Dims') > 0) then
                 pos = index(line, 'Dims') + 4
                 read(line(pos+1:), *) mesh%dim
@@ -99,7 +102,11 @@ contains
         allocate(mesh%edge_knot_vectors_xi(edge_count, max_knots))
         allocate(mesh%edges(edge_count, max_cp), mesh%boundary_ids(edge_count))
 
-        mesh%patch_cp_ids = 0; mesh%patch_knot_vectors_xi = 0.0; mesh%patch_knot_vectors_eta = 0.0
+        mesh%patch_cp_ids = 0
+        mesh%patch_knot_vectors_xi = 0.0
+        mesh%patch_knot_vectors_eta = 0.0
+        mesh%edges = 0
+        mesh%boundary_ids = 0
 
         rewind(unit)
     
@@ -140,9 +147,11 @@ contains
         ! --- Subdivision into Knot Spans (Elements) ---
         n_total_elems = 0
         do p_idx = 1, patch_count
-            do span_u = 1, mesh%patch_n_knots_xi(p_idx)-1
+            p = mesh%order
+            ! Spans with basis support exist between knot indices p+1 and n_knots - p - 1
+            do span_u = p + 1, mesh%patch_n_knots_xi(p_idx) - p - 1
                 if (mesh%patch_knot_vectors_xi(p_idx, span_u+1) > mesh%patch_knot_vectors_xi(p_idx, span_u) + dp_EPSILON) then
-                    do span_v = 1, mesh%patch_n_knots_eta(p_idx)-1
+                    do span_v = p + 1, mesh%patch_n_knots_eta(p_idx) - p - 1
                         if (mesh%patch_knot_vectors_eta(p_idx, span_v+1) > mesh%patch_knot_vectors_eta(p_idx, span_v) + dp_EPSILON) then
                             n_total_elems = n_total_elems + 1
                         end if
@@ -153,20 +162,25 @@ contains
 
         mesh%n_elems = n_total_elems
         allocate(mesh%elems(mesh%n_elems, (p+1)*(q+1)))
-        allocate(mesh%material_ids(mesh%n_elems), mesh%pin_ids(mesh%n_elems))
+        allocate(mesh%material_ids(mesh%n_elems))
         allocate(mesh%elem_u_min(mesh%n_elems), mesh%elem_u_max(mesh%n_elems))
         allocate(mesh%elem_v_min(mesh%n_elems), mesh%elem_v_max(mesh%n_elems))
         allocate(mesh%elem_patch_id(mesh%n_elems))
+        allocate(mesh%elem_map_to_id(patch_count, max_knots, max_knots)) ! Max_knots is a safe upper bound for span indices
+        allocate(mesh%elem_span_indices(2, mesh%n_elems))
 
         k = 0
         do p_idx = 1, patch_count
             do span_u = p + 1, mesh%patch_n_knots_xi(p_idx) - p - 1
                 if (mesh%patch_knot_vectors_xi(p_idx, span_u+1) <= mesh%patch_knot_vectors_xi(p_idx, span_u) + dp_EPSILON) cycle
-                do span_v = q + 1, mesh%patch_n_knots_eta(p_idx) - q - 1
+                do span_v = p + 1, mesh%patch_n_knots_eta(p_idx) - p - 1
                     if (mesh%patch_knot_vectors_eta(p_idx, span_v+1) <= mesh%patch_knot_vectors_eta(p_idx, span_v) + dp_EPSILON) cycle
                     
                     k = k + 1
                     mesh%elem_patch_id(k) = p_idx
+                    mesh%elem_span_indices(1, k) = span_u
+                    mesh%elem_span_indices(2, k) = span_v
+                    mesh%elem_map_to_id(p_idx, span_u, span_v) = k ! Populate lookup table
                     mesh%material_ids(k) = mesh%patch_material_ids(p_idx)
                     mesh%elem_u_min(k)   = mesh%patch_knot_vectors_xi(p_idx, span_u)
                     mesh%elem_u_max(k)   = mesh%patch_knot_vectors_xi(p_idx, span_u+1)
@@ -174,7 +188,7 @@ contains
                     mesh%elem_v_max(k)   = mesh%patch_knot_vectors_eta(p_idx, span_v+1)
 
                     cp_idx = 0
-                    do jj = span_v - q, span_v
+                    do jj = span_v - p, span_v
                         do ii = span_u - p, span_u
                             cp_idx = cp_idx + 1
                             mesh%elems(k, cp_idx) = mesh%patch_cp_ids(p_idx, (jj-1)*mesh%patch_n_cp_xi(p_idx) + ii)
@@ -214,11 +228,21 @@ contains
             if (l == '' .or. l(1:1) == '!') cycle
 
             if (index(l, 'Material_ID:') > 0) then
-                pos = index(l, ':') + 1
-                read(l(pos:), *, iostat=ios) out_id2
+                pos = index(l, ':')
+                ! Check if ID is on the same line or next line
+                if (len_trim(l(pos+1:)) > 0) then
+                    read(l(pos+1:), *, iostat=ios) out_id2
+                else
+                    read(u, *, iostat=ios) out_id2
+                end if
             else if (index(l, 'BC:') > 0) then
-                pos = index(l, ':') + 1
-                read(l(pos:), *, iostat=ios) out_id2
+                pos = index(l, ':')
+                ! Check if ID is on the same line or next line
+                if (len_trim(l(pos+1:)) > 0) then
+                    read(l(pos+1:), *, iostat=ios) out_id2
+                else
+                    read(u, *, iostat=ios) out_id2
+                end if
             else if (index(l, 'control_points:') > 0) then
                 pos = index(l, ':') + 1
                 read(l(pos:), *, iostat=ios) n_val
@@ -307,5 +331,59 @@ contains
         close(u)
 
     end subroutine write_mesh_to_files
+
+    subroutine InsertKnot1D(p, knots_old, cp_old, weights_old, u_new, knots_ref, cp_ref, weights_ref)
+        integer, intent(in) :: p
+        real(dp), intent(in) :: knots_old(:), cp_old(:,:), weights_old(:), u_new
+        real(dp), allocatable, intent(out) :: knots_ref(:), cp_ref(:,:), weights_ref(:)
+        
+        integer :: n, k, i, dim
+        real(dp) :: alpha
+        
+        n = size(cp_old, 2)
+        dim = size(cp_old, 1)
+        
+        ! 1. Find the span where the new knot sits
+        k = 0
+        do i = 1, size(knots_old)-1
+            if (u_new >= knots_old(i) .and. u_new < knots_old(i+1)) then
+                k = i
+                exit
+            end if
+        end do
+        if (k == 0) return
+
+        allocate(knots_ref(size(knots_old)+1))
+        allocate(cp_ref(dim, n+1))
+        allocate(weights_ref(n+1))
+
+        ! 2. New knot vector
+        knots_ref(1:k) = knots_old(1:k)
+        knots_ref(k+1) = u_new
+        knots_ref(k+2:) = knots_old(k+1:)
+
+        ! 3. New Control Points and Weights
+        do i = 1, n + 1
+            if (i <= k - p) then
+                alpha = 1.0_dp
+            else if (i >= k + 1) then
+                alpha = 0.0_dp
+            else
+                alpha = (u_new - knots_old(i)) / (knots_old(i + p) - knots_old(i))
+            end if
+            
+            if (i == 1) then
+                cp_ref(:, i) = cp_old(:, i)
+                weights_ref(i) = weights_old(i)
+            else if (i == n + 1) then
+                cp_ref(:, i) = cp_old(:, i-1)
+                weights_ref(i) = weights_old(i-1)
+            else
+                cp_ref(:, i) = alpha * cp_old(:, i) * weights_old(i) + (1.0_dp - alpha) * cp_old(:, i-1) * weights_old(i-1)
+                weights_ref(i) = alpha * weights_old(i) + (1.0_dp - alpha) * weights_old(i-1)
+                cp_ref(:, i) = cp_ref(:, i) / weights_ref(i) ! Project back from homogeneous space
+            end if
+        end do
+    end subroutine InsertKnot1D
 
 end module m_asmg

@@ -4,6 +4,7 @@ module m_types
     
     type t_mesh
         integer               :: dim
+        integer               :: n_groups
         integer               :: n_nodes          ! Total number of unique control points
         real(dp), allocatable :: nodes(:,:)       ! Global coordinates of control points
         real(dp), allocatable :: weights(:)       ! Weights of control points (NURBS)
@@ -29,8 +30,9 @@ module m_types
 
         integer, allocatable :: elems(:,:)        ! Global CP IDs per knot span element
         integer, allocatable :: material_ids(:)
-        integer, allocatable :: pin_ids(:)
         integer, allocatable :: elem_patch_id(:)  ! Parent patch reference
+        integer, allocatable :: elem_span_indices(:,:) ! (2, n_elems) -> span_u, span_v
+        integer, allocatable :: elem_map_to_id(:,:,:) ! (patch_id, span_u, span_v) -> elem_id
         real(dp), allocatable :: elem_u_min(:), elem_u_max(:) 
         real(dp), allocatable :: elem_v_min(:), elem_v_max(:)
 
@@ -57,12 +59,6 @@ module m_types
         integer :: n_basis
         integer :: n_nodes_per_face
         integer, allocatable :: face_node_map(:,:)
-        real(dp), allocatable :: node_roots(:)
-        real(dp), allocatable :: basis_at_quad(:,:)
-        real(dp), allocatable :: dbasis_dxi(:,:)
-        real(dp), allocatable :: dbasis_deta(:,:)
-        real(dp), allocatable :: basis_at_bound_quad(:,:)
-        real(dp), allocatable :: dbasis_at_bound_quad(:,:)
     end type t_finite
 
     type t_material
