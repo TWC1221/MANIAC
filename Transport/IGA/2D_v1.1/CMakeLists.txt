@@ -33,17 +33,25 @@
 
 # target_link_libraries(2Diffusion src ${PETSC_LIBS} lapack blas)
 
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.5)
 project(neutron_code LANGUAGES Fortran C)
 
 set(CMAKE_BUILD_TYPE "Debug")
 
+# 1. EXTERNAL PACKAGES
+find_package(LAPACK REQUIRED)
+find_package(BLAS REQUIRED)
+
 # 2. COMPILER FLAGS
 set(CMAKE_Fortran_FLAGS "-Wall -ffree-line-length-none")
-set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -pg -Og -fopenmp")
+if(APPLE)
+    # -pg is often unsupported on macOS and can cause linker errors
+    set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -Og -fopenmp")
+else()
+    set(CMAKE_Fortran_FLAGS_DEBUG "-fcheck=all -pg -Og -fopenmp")
+endif()
 
 set(CMAKE_Fortran_MODULE_DIRECTORY ${CMAKE_BINARY_DIR}/fortran_mods)
-file(MAKE_DIRECTORY ${CMAKE_Fortran_MODULE_DIRECTORY})
 
 # 3. STATIC LIBRARY (Modules)
 add_library(src STATIC
@@ -61,12 +69,16 @@ add_library(src STATIC
 set_target_properties(src PROPERTIES Fortran_PREPROCESS ON)
 
 # 4. EXECUTABLE
-add_executable(2DGFEM 2D_V1.1.F90)
-set_target_properties(2DGFEM PROPERTIES Fortran_PREPROCESS ON)
+add_executable(2DIGA 2D_V1.1.F90)
+set_target_properties(2DIGA PROPERTIES Fortran_PREPROCESS ON)
+
+# Ensure the executable finds the generated .mod files
+target_include_directories(src PUBLIC ${CMAKE_Fortran_MODULE_DIRECTORY})
+target_include_directories(2DIGA PRIVATE ${CMAKE_Fortran_MODULE_DIRECTORY})
 
 # 5. THE LINKING FIX
-target_link_libraries(2DGFEM
-    src 
-    lapack 
-    blas 
+target_link_libraries(2DIGA
+    src
+    LAPACK::LAPACK
+    BLAS::BLAS
 )

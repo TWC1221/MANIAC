@@ -95,7 +95,7 @@ module m_transport
 
                     ang_flux(idx_start:idx_end, mm, g) = b
                     
-                    w_mm = sn_quad%weights(mm)/(4.0_dp * pi)
+                    w_mm = sn_quad%weights(mm)
                     do k = 1, FE%n_basis
                         dof_idx = idx_start + k - 1
                         !$OMP ATOMIC

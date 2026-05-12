@@ -34,7 +34,7 @@ program fem2d_main
     is_eigenvalue_problem  = .true.
     is_adjoint             = .false.
 
-    InputMesh              = "../input/quatre.asmg" !squares_IGA_FDG
+    InputMesh              = "../input/pincell.asmg" !squares_IGA_FDG
     ref_ID                 = [2]
 
     QuadSn%order           =  16
@@ -90,7 +90,7 @@ program fem2d_main
         end if
     end do
 
-    call export_dfem_vtk("../output/"//derive_case_nametag(InputMesh), mesh, FE, Quad1D, QuadSN, scalar_flux, is_adjoint, refine_level_in=8)
+    call export_dfem_vtk("../output/"//derive_case_nametag(InputMesh), mesh, FE, Quad1D, QuadSN, scalar_flux, is_adjoint, refine_level_in=10)
     write(*,*) ">>> Simulation Complete."
 
     t2 = omp_get_wtime()
